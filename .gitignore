@@ -1,0 +1,72 @@
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments and local configuration
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Editor and OS temporary files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.*.swp
+*.save
+
+# Datasets and raw data
+data/
+raw_data/
+datasets_raw/
+
+# Pre-trained weights.
+# Keep the README trackable, but ignore downloaded model files.
+pre_trained_weights/*
+!pre_trained_weights/README.md
+pretrained_weights/
+weights/
+
+# Training outputs, checkpoints, logs, and visualizations
+outputs/
+results/*
+!results/README.md
+runs/
+logs/
+wandb/
+tensorboard/
+checkpoints/
+summary/
+events.out.tfevents.*
+*.log
+
+# Model weights and serialized experiment artifacts
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.onnx
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.joblib
+*.npy
+*.npz
+*.mat
+
+# Large local install/package artifacts
+*.whl
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z

@@ -1,0 +1,13 @@
+ID,exp_name,dataset,input_size,num_regions,num_paths,slic_iters,tau,xy_weight,k_spatial,k_feature,init_gamma,lambda_region,lambda_compact,Dice,IoU,Jaccard,HD95,Params,FLOPs,FPS,Q_entropy,empty_region_ratio,outer_gamma,inner_gamma,note
+A0,A0_vmunet_baseline,isic2018,256x256,,0,0,,,,,,0.0,0.0,,,,,,,,,,,,VM-UNet baseline
+A1,A1_sp_rgm_module_only_4x4,isic2018,256x256,4x4,4,5,0.1,2.0,4,4,0.001,0.0,0.0,,,,,,,,,,,,SP-RGM module only
+A2,A2_sp_rgm_full_4x4,isic2018,256x256,4x4,4,5,0.1,2.0,4,4,0.001,0.2,0.001,,,,,,,,,,,,Full auxiliary losses
+A3,A3_sp_rgm_single_path_4x4,isic2018,256x256,4x4,1,5,0.1,2.0,4,4,0.001,0.2,0.001,,,,,,,,,,,,Requested single-path ablation; current core is fixed at 4 paths
+A4,A4_sp_rgm_multi_path_4x4,isic2018,256x256,4x4,4,5,0.1,2.0,4,4,0.001,0.2,0.001,,,,,,,,,,,,Main first-round SP-RGM config
+B1,B1_sp_rgm_regions_4x4,isic2018,256x256,4x4,4,5,0.1,2.0,4,4,0.001,0.2,0.001,,,,,,,,,,,,Region-count ablation 4x4
+B2,B2_sp_rgm_regions_6x6,isic2018,256x256,6x6,4,5,0.1,2.0,6,6,0.001,0.2,0.001,,,,,,,,,,,,Region-count ablation 6x6
+B3,B3_sp_rgm_regions_8x8,isic2018,256x256,8x8,4,5,0.1,2.0,6,6,0.001,0.2,0.001,,,,,,,,,,,,Region-count ablation 8x8
+C1,C1_sp_rgm_low_region_loss_4x4,isic2018,256x256,4x4,4,5,0.1,2.0,4,4,0.001,0.05,0.0005,,,,,,,,,,,,Lower auxiliary losses
+C2,C2_sp_rgm_gamma_0p01_4x4,isic2018,256x256,4x4,4,5,0.1,2.0,4,4,0.01,0.2,0.001,,,,,,,,,,,,Larger residual gamma
+C3,C3_sp_rgm_tau_0p2_4x4,isic2018,256x256,4x4,4,5,0.2,2.0,4,4,0.001,0.2,0.001,,,,,,,,,,,,Softer assignments
+C4,C4_sp_rgm_tau_0p05_4x4,isic2018,256x256,4x4,4,5,0.05,2.0,4,4,0.001,0.2,0.001,,,,,,,,,,,,Harder assignments

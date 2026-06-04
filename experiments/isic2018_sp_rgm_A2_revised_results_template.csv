@@ -1,0 +1,13 @@
+ID,exp_name,dataset,input_size,checkpoint_type,best_epoch,num_regions,path_modes,num_iters,tau,xy_weight,k_spatial,k_feature,init_gamma,lambda_region,lambda_compact,Dice,IoU,Jaccard,Accuracy,Specificity,Sensitivity,TP,FP,TN,FN,Q_entropy,q_max_mean,q_max_min,empty_region_ratio,region_mass_mean,region_mass_min,region_mass_max,region_mass_std,region_mass_nonzero_ratio,region_mass_cv,outer_gamma,inner_gamma,uses_mamba,note
+A2,A2_sp_rgm_full_loss_4x4,ISIC2018,256x256,best_loss,,"(4,4)","yx|xy|graph|reverse_graph",5,0.1,2.0,4,4,0.001,0.2,0.001,,,,,,,,,,,,,,,,,,,,,,,,original A2
+A2,A2_sp_rgm_full_loss_4x4,ISIC2018,256x256,best_dice,,"(4,4)","yx|xy|graph|reverse_graph",5,0.1,2.0,4,4,0.001,0.2,0.001,,,,,,,,,,,,,,,,,,,,,,,,original A2
+A2,A2_sp_rgm_full_loss_4x4,ISIC2018,256x256,best_iou,,"(4,4)","yx|xy|graph|reverse_graph",5,0.1,2.0,4,4,0.001,0.2,0.001,,,,,,,,,,,,,,,,,,,,,,,,original A2
+A2R1,A2R1_sp_rgm_lite_region_loss_4x4,ISIC2018,256x256,best_loss,,"(4,4)","yx|xy|graph|reverse_graph",5,0.1,2.0,4,4,0.001,0.05,0.0,,,,,,,,,,,,,,,,,,,,,,,,lower region loss
+A2R1,A2R1_sp_rgm_lite_region_loss_4x4,ISIC2018,256x256,best_dice,,"(4,4)","yx|xy|graph|reverse_graph",5,0.1,2.0,4,4,0.001,0.05,0.0,,,,,,,,,,,,,,,,,,,,,,,,lower region loss
+A2R1,A2R1_sp_rgm_lite_region_loss_4x4,ISIC2018,256x256,best_iou,,"(4,4)","yx|xy|graph|reverse_graph",5,0.1,2.0,4,4,0.001,0.05,0.0,,,,,,,,,,,,,,,,,,,,,,,,lower region loss
+A2R2,A2R2_sp_rgm_lite_region_loss_tau0p2_4x4,ISIC2018,256x256,best_loss,,"(4,4)","yx|xy|graph|reverse_graph",5,0.2,2.0,4,4,0.001,0.05,0.0,,,,,,,,,,,,,,,,,,,,,,,,lower region loss + softer tau
+A2R2,A2R2_sp_rgm_lite_region_loss_tau0p2_4x4,ISIC2018,256x256,best_dice,,"(4,4)","yx|xy|graph|reverse_graph",5,0.2,2.0,4,4,0.001,0.05,0.0,,,,,,,,,,,,,,,,,,,,,,,,lower region loss + softer tau
+A2R2,A2R2_sp_rgm_lite_region_loss_tau0p2_4x4,ISIC2018,256x256,best_iou,,"(4,4)","yx|xy|graph|reverse_graph",5,0.2,2.0,4,4,0.001,0.05,0.0,,,,,,,,,,,,,,,,,,,,,,,,lower region loss + softer tau
+A2R3,A2R3_sp_rgm_lite_full_loss_tau0p2_4x4,ISIC2018,256x256,best_loss,,"(4,4)","yx|xy|graph|reverse_graph",5,0.2,2.0,4,4,0.001,0.05,0.0005,,,,,,,,,,,,,,,,,,,,,,,,lower region loss + softer tau + light compactness
+A2R3,A2R3_sp_rgm_lite_full_loss_tau0p2_4x4,ISIC2018,256x256,best_dice,,"(4,4)","yx|xy|graph|reverse_graph",5,0.2,2.0,4,4,0.001,0.05,0.0005,,,,,,,,,,,,,,,,,,,,,,,,lower region loss + softer tau + light compactness
+A2R3,A2R3_sp_rgm_lite_full_loss_tau0p2_4x4,ISIC2018,256x256,best_iou,,"(4,4)","yx|xy|graph|reverse_graph",5,0.2,2.0,4,4,0.001,0.05,0.0005,,,,,,,,,,,,,,,,,,,,,,,,lower region loss + softer tau + light compactness

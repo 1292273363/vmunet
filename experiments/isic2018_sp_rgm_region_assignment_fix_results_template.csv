@@ -1,0 +1,10 @@
+ID,exp_name,dataset,input_size,checkpoint_type,best_epoch,num_regions,path_modes,num_iters,tau,xy_weight,k_spatial,k_feature,init_gamma,lambda_region,lambda_compact,lambda_balance,Dice,IoU,Jaccard,Accuracy,Specificity,Sensitivity,TP,FP,TN,FN,Q_entropy,q_max_mean,q_max_min,empty_region_ratio,region_mass_mean,region_mass_min,region_mass_max,region_mass_std,region_mass_nonzero_ratio,region_mass_cv,outer_gamma,inner_gamma,uses_mamba,note
+A0,A0_vmunet_baseline,ISIC2018,256x256,best_loss,,NA,NA,NA,NA,NA,NA,NA,NA,0.0,0.0,0.0,,,,,,,,,,,,,,,,,,,,,,,,baseline_no_sp_rgm
+A1,A1_sp_rgm_module_only_4x4,ISIC2018,256x256,best_loss,,"(4,4)",yx|xy|graph|reverse_graph,5,0.1,2.0,4,4,0.001,0.0,0.0,0.0,,,,,,,,,,,,,,,,,,,,,,,,module_only_reference
+A2,A2_sp_rgm_full_loss_4x4,ISIC2018,256x256,best_loss,,"(4,4)",yx|xy|graph|reverse_graph,5,0.1,2.0,4,4,0.001,0.2,0.001,0.0,,,,,,,,,,,,,,,,,,,,,,,,strong_aux_loss_reference
+A2R1,A2R1_sp_rgm_lite_region_loss_4x4,ISIC2018,256x256,best_loss,,"(4,4)",yx|xy|graph|reverse_graph,5,0.1,2.0,4,4,0.001,0.05,0.0,0.0,,,,,,,,,,,,,,,,,,,,,,,,lite_region_loss_reference
+A2R2,A2R2_sp_rgm_lite_region_loss_tau0p2_4x4,ISIC2018,256x256,best_loss,,"(4,4)",yx|xy|graph|reverse_graph,5,0.2,2.0,4,4,0.001,0.05,0.0,0.0,,,,,,,,,,,,,,,,,,,,,,,,tau0p2_reference
+R1,R1_sp_rgm_regions_2x2_tau0p2_lite_loss,ISIC2018,256x256,best_loss,,"(2,2)",yx|xy|graph|reverse_graph,5,0.2,2.0,3,3,0.001,0.05,0.0,0.0,,,,,,,,,,,,,,,,,,,,,,,,test_2x2_regions
+R2,R2_sp_rgm_4x4_tau0p2_balance,ISIC2018,256x256,best_loss,,"(4,4)",yx|xy|graph|reverse_graph,5,0.2,2.0,4,4,0.001,0.05,0.0,0.0005,,,,,,,,,,,,,,,,,,,,,,,,test_4x4_mass_balance
+R3,R3_sp_rgm_2x2_tau0p2_balance,ISIC2018,256x256,best_loss,,"(2,2)",yx|xy|graph|reverse_graph,5,0.2,2.0,3,3,0.001,0.05,0.0,0.0005,,,,,,,,,,,,,,,,,,,,,,,,test_2x2_mass_balance
+R4,R4_sp_rgm_4x4_tau0p2_xy4_balance,ISIC2018,256x256,best_loss,,"(4,4)",yx|xy|graph|reverse_graph,5,0.2,4.0,4,4,0.001,0.05,0.0,0.0005,,,,,,,,,,,,,,,,,,,,,,,,optional_xy_weight_4
