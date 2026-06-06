@@ -58,6 +58,24 @@ def _format_eval_log(prefix, metrics):
     )
 
 
+def _format_log_value(value, precision=4):
+    if value is None:
+        return 'NA'
+    if torch.is_tensor(value):
+        if value.numel() != 1:
+            return str(value)
+        value = value.item()
+    if isinstance(value, float):
+        return f'{value:.{precision}f}'
+    return str(value)
+
+
+def _format_path_modes(path_modes):
+    if isinstance(path_modes, (tuple, list)):
+        return '|'.join(str(mode) for mode in path_modes)
+    return str(path_modes)
+
+
 def _compute_train_loss(model_out, targets, criterion, config):
     if not getattr(config, 'use_sp_rgm', False):
         loss = criterion(model_out, targets)
@@ -119,6 +137,21 @@ def _compute_train_loss(model_out, targets, criterion, config):
         'path_modes': sp_aux['path_modes'],
         'num_paths_actual': sp_aux['num_paths_actual'],
     }
+    for key in (
+        'dist_min_mean',
+        'dist_second_mean',
+        'dist_margin_mean',
+        'dist_margin_max',
+        'logit_margin_mean',
+        'logit_margin_max',
+        'feat_dist_mean',
+        'xy_dist_mean',
+        'feat_xy_dist_ratio',
+        'feat_margin_mean',
+        'xy_margin_mean',
+    ):
+        if key in sp_aux:
+            stats[key] = sp_aux[key]
     return loss_total, stats
 
 
@@ -177,6 +210,17 @@ def train_one_epoch(train_loader,
                     f"region_mass_cv: {loss_stats['region_mass_cv'].item():.4f}, "
                     f"q_max_mean: {loss_stats['q_max_mean'].item():.4f}, "
                     f"q_max_min: {loss_stats['q_max_min'].item():.4f}, "
+                    f"dist_min_mean: {_format_log_value(loss_stats.get('dist_min_mean'))}, "
+                    f"dist_second_mean: {_format_log_value(loss_stats.get('dist_second_mean'))}, "
+                    f"dist_margin_mean: {_format_log_value(loss_stats.get('dist_margin_mean'))}, "
+                    f"dist_margin_max: {_format_log_value(loss_stats.get('dist_margin_max'))}, "
+                    f"logit_margin_mean: {_format_log_value(loss_stats.get('logit_margin_mean'))}, "
+                    f"logit_margin_max: {_format_log_value(loss_stats.get('logit_margin_max'))}, "
+                    f"feat_dist_mean: {_format_log_value(loss_stats.get('feat_dist_mean'))}, "
+                    f"xy_dist_mean: {_format_log_value(loss_stats.get('xy_dist_mean'))}, "
+                    f"feat_xy_dist_ratio: {_format_log_value(loss_stats.get('feat_xy_dist_ratio'))}, "
+                    f"feat_margin_mean: {_format_log_value(loss_stats.get('feat_margin_mean'))}, "
+                    f"xy_margin_mean: {_format_log_value(loss_stats.get('xy_margin_mean'))}, "
                     f"outer_gamma: {loss_stats['outer_gamma'].item():.6f}, "
                     f"inner_gamma: {loss_stats['inner_gamma'].item():.6f}, "
                     f"num_regions_effective: {loss_stats['num_regions_effective']}, "
@@ -184,7 +228,7 @@ def train_one_epoch(train_loader,
                     f"feat_h: {loss_stats['feat_h']}, "
                     f"feat_w: {loss_stats['feat_w']}, "
                     f"uses_mamba: {loss_stats['uses_mamba']}, "
-                    f"path_modes: {loss_stats['path_modes']}, "
+                    f"path_modes: {_format_path_modes(loss_stats['path_modes'])}, "
                     f"num_paths_actual: {loss_stats['num_paths_actual']}, "
                     f"lambda_region: {loss_stats['lambda_region']}, "
                     f"lambda_compact: {loss_stats['lambda_compact']}, "

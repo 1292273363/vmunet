@@ -15,6 +15,10 @@ class SuperpixelRegionGraphMambaBlock(nn.Module):
         num_iters=5,
         tau=0.1,
         xy_weight=2.0,
+        feat_weight=0.2,
+        normalize_assign=True,
+        assign_norm='layer',
+        return_distance_stats=True,
         d_state=16,
         d_conv=4,
         expand=2,
@@ -34,6 +38,10 @@ class SuperpixelRegionGraphMambaBlock(nn.Module):
             num_iters=num_iters,
             tau=tau,
             xy_weight=xy_weight,
+            feat_weight=feat_weight,
+            normalize_assign=normalize_assign,
+            assign_norm=assign_norm,
+            return_distance_stats=return_distance_stats,
         )
         self.region_mamba = RegionGraphMamba(
             dim=dim,
@@ -66,7 +74,12 @@ class SuperpixelRegionGraphMambaBlock(nn.Module):
             aux: dict with differentiable region tensors for training losses
         """
         b, c, h, w = x.shape
-        region_tokens, Q, recon_feat, region_xy = self.soft_slic(x)
+        soft_slic_out = self.soft_slic(x)
+        if len(soft_slic_out) == 5:
+            region_tokens, Q, recon_feat, region_xy, slic_stats = soft_slic_out
+        else:
+            region_tokens, Q, recon_feat, region_xy = soft_slic_out
+            slic_stats = {}
         updated_tokens = self.region_mamba(region_tokens, region_xy)
 
         # updated_flat: [B, N, C], updated_feat: [B, C, H, W]
@@ -115,4 +128,5 @@ class SuperpixelRegionGraphMambaBlock(nn.Module):
             'path_modes': self.region_mamba.path_modes,
             'num_paths_actual': len(self.region_mamba.path_modes),
         }
+        aux.update(slic_stats)
         return out, aux
