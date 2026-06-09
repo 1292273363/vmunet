@@ -274,19 +274,20 @@ def main(config):
             )
             logger.info(f"saved best_iou.pth: {_format_best_record(best_records['best_iou'])}")
 
-        torch.save(
-            {
-                'epoch': epoch,
-                'min_loss': best_records['best_loss']['value'],
-                'min_epoch': best_records['best_loss']['epoch'],
-                'loss': val_metrics['loss'],
-                'dice': val_metrics['dice'],
-                'iou': val_metrics['iou'],
-                'best_records': best_records,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-            }, os.path.join(checkpoint_dir, 'latest.pth')) 
+        last_checkpoint = {
+            'epoch': epoch,
+            'min_loss': best_records['best_loss']['value'],
+            'min_epoch': best_records['best_loss']['epoch'],
+            'loss': val_metrics['loss'],
+            'dice': val_metrics['dice'],
+            'iou': val_metrics['iou'],
+            'best_records': best_records,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+        }
+        torch.save(last_checkpoint, os.path.join(checkpoint_dir, 'latest.pth'))
+        torch.save(last_checkpoint, os.path.join(checkpoint_dir, 'last.pth')) 
 
     for checkpoint_type in ('best_loss', 'best_dice', 'best_iou'):
         checkpoint_path = os.path.join(checkpoint_dir, f'{checkpoint_type}.pth')
@@ -298,18 +299,28 @@ def main(config):
         logger.info(log_info)
 
     selected_checkpoint_type = getattr(config, 'test_checkpoint_type', 'best_loss')
-    if selected_checkpoint_type not in {'best_loss', 'best_dice', 'best_iou'}:
+    valid_checkpoint_types = {'best_loss', 'best_dice', 'best_iou', 'all'}
+    if selected_checkpoint_type not in valid_checkpoint_types:
         raise ValueError(
             "config.test_checkpoint_type must be one of "
-            "['best_loss', 'best_dice', 'best_iou']"
+            "['best_loss', 'best_dice', 'best_iou', 'all']"
         )
 
-    selected_checkpoint_path = os.path.join(checkpoint_dir, f'{selected_checkpoint_type}.pth')
-    if os.path.exists(selected_checkpoint_path):
+    test_checkpoint_types = (
+        ('best_loss', 'best_dice', 'best_iou')
+        if selected_checkpoint_type == 'all'
+        else (selected_checkpoint_type,)
+    )
+    for checkpoint_type in test_checkpoint_types:
+        selected_checkpoint_path = os.path.join(checkpoint_dir, f'{checkpoint_type}.pth')
+        if not os.path.exists(selected_checkpoint_path):
+            logger.info(f'skipped final test because {selected_checkpoint_path} does not exist.')
+            continue
+
         print('#----------Testing----------#')
         best_weight = torch.load(selected_checkpoint_path, map_location=torch.device('cpu'))
         model.load_state_dict(_extract_model_state(best_weight))
-        config.active_test_checkpoint_type = selected_checkpoint_type
+        config.active_test_checkpoint_type = checkpoint_type
         test_one_epoch(
                 val_loader,
                 model,
@@ -317,8 +328,6 @@ def main(config):
                 logger,
                 config,
             )
-    else:
-        logger.info(f'skipped final test because {selected_checkpoint_path} does not exist.')
 
 
 if __name__ == '__main__':
@@ -330,7 +339,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--test-checkpoint-type',
-        choices=['best_loss', 'best_dice', 'best_iou'],
+        choices=['best_loss', 'best_dice', 'best_iou', 'all'],
         default=None,
         help='Checkpoint type used for the final test after training.',
     )
