@@ -9,7 +9,12 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from einops import rearrange, repeat
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+from models.region_mamba.soft_slic import SoftSLIC
 from models.region_mamba import SuperpixelRegionGraphMambaBlock
+from models.region_mamba.sp_scan_ordering import (
+    batched_gather_tokens,
+    build_superpixel_graph_token_permutation,
+)
 try:
     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
 except:
@@ -267,6 +272,8 @@ class SS2D(nn.Module):
         bias=False,
         device=None,
         dtype=None,
+        use_sp_scan=False,
+        sp_scan_cfg=None,
         **kwargs,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -313,8 +320,37 @@ class SS2D(nn.Module):
         self.A_logs = self.A_log_init(self.d_state, self.d_inner, copies=4, merge=True) # (K=4, D, N)
         self.Ds = self.D_init(self.d_inner, copies=4, merge=True) # (K=4, D, N)
 
+        self.use_sp_scan = use_sp_scan
+        self.sp_scan_cfg = dict(sp_scan_cfg or {})
+        self.sp_scan_replace_mode = self.sp_scan_cfg.get('replace_mode', 'two_paths')
+        self.last_sp_scan_stats = None
+        self.sp_scan_soft_slic = None
+        if self.use_sp_scan:
+            if self.sp_scan_replace_mode not in {'none', 'one_path', 'two_paths'}:
+                raise ValueError(
+                    "SS2D sp_scan replace_mode must be one of "
+                    "['none', 'one_path', 'two_paths']."
+                )
+            if self.sp_scan_cfg.get('graph_order', 'greedy') != 'greedy':
+                raise ValueError("SS2D sp_scan currently supports graph_order='greedy' only.")
+            soft_slic_cfg = {
+                'num_regions': self.sp_scan_cfg.get('num_regions', (2, 2)),
+                'num_iters': self.sp_scan_cfg.get('num_iters', 5),
+                'tau': self.sp_scan_cfg.get('tau', 0.2),
+                'xy_weight': self.sp_scan_cfg.get('xy_weight', 2.0),
+                'feat_weight': self.sp_scan_cfg.get('feat_weight', 0.1),
+                'normalize_assign': self.sp_scan_cfg.get('normalize_assign', True),
+                'assign_norm': self.sp_scan_cfg.get('assign_norm', 'layer'),
+                'return_distance_stats': self.sp_scan_cfg.get('debug_stats', True),
+            }
+            self.sp_scan_soft_slic = SoftSLIC(**soft_slic_cfg)
+
         # self.selective_scan = selective_scan_fn
-        self.forward_core = self.forward_corev0
+        self.forward_core = (
+            self.forward_core_sp_scan
+            if self.use_sp_scan and self.sp_scan_replace_mode != 'none'
+            else self.forward_corev0
+        )
 
         self.out_norm = nn.LayerNorm(self.d_inner)
         self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
@@ -415,6 +451,88 @@ class SS2D(nn.Module):
 
         return out_y[:, 0], inv_y[:, 0], wh_y, invwh_y
 
+    def _restore_graph_scan_output(self, y, inv_perm):
+        # y: [B, D, L] in graph order, inv_perm: [B, L]
+        y_tokens = y.transpose(1, 2).contiguous()
+        y_tokens = batched_gather_tokens(y_tokens, inv_perm)
+        return y_tokens.transpose(1, 2).contiguous()
+
+    def forward_core_sp_scan(self, x: torch.Tensor):
+        """Selective scan with one or two dense-token paths ordered by a superpixel graph."""
+        self.selective_scan = selective_scan_fn
+
+        B, C, H, W = x.shape
+        L = H * W
+        K = 4
+
+        raster = x.view(B, -1, L)
+        transpose_raster = torch.transpose(x, dim0=2, dim1=3).contiguous().view(B, -1, L)
+        reverse_raster = torch.flip(raster, dims=[-1])
+
+        perm, inv_perm, sp_stats = build_superpixel_graph_token_permutation(
+            x,
+            self.sp_scan_soft_slic,
+            k_spatial=self.sp_scan_cfg.get('k_spatial', 3),
+            k_feature=self.sp_scan_cfg.get('k_feature', 3),
+            alpha=self.sp_scan_cfg.get('alpha', 0.5),
+            beta=self.sp_scan_cfg.get('beta', 0.5),
+            token_inner_order=self.sp_scan_cfg.get('token_inner_order', 'raster'),
+            detach_order=self.sp_scan_cfg.get('detach_order', True),
+        )
+        x_tokens = raster.transpose(1, 2).contiguous()  # [B, L, D]
+        graph_tokens = batched_gather_tokens(x_tokens, perm)
+        graph_path = graph_tokens.transpose(1, 2).contiguous()  # [B, D, L]
+        reverse_graph_path = torch.flip(graph_path, dims=[-1])
+
+        replace_mode = self.sp_scan_replace_mode
+        if replace_mode == 'one_path':
+            xs = torch.stack([raster, transpose_raster, reverse_raster, graph_path], dim=1)
+            path_types = ('raster', 'transpose', 'reverse_raster', 'graph')
+        elif replace_mode == 'two_paths':
+            xs = torch.stack([raster, transpose_raster, graph_path, reverse_graph_path], dim=1)
+            path_types = ('raster', 'transpose', 'graph', 'reverse_graph')
+        else:
+            raise ValueError(f"Unsupported sp_scan replace_mode: {replace_mode}")
+
+        self.last_sp_scan_stats = dict(sp_stats)
+        self.last_sp_scan_stats.update({
+            'replace_mode': replace_mode,
+            'path_types': path_types,
+            'uses_mamba': 'selective_scan_fn' in globals(),
+        })
+
+        x_dbl = torch.einsum("b k d l, k c d -> b k c l", xs.view(B, K, -1, L), self.x_proj_weight)
+        dts, Bs, Cs = torch.split(x_dbl, [self.dt_rank, self.d_state, self.d_state], dim=2)
+        dts = torch.einsum("b k r l, k d r -> b k d l", dts.view(B, K, -1, L), self.dt_projs_weight)
+
+        xs = xs.float().view(B, -1, L)
+        dts = dts.contiguous().float().view(B, -1, L)
+        Bs = Bs.float().view(B, K, -1, L)
+        Cs = Cs.float().view(B, K, -1, L)
+        Ds = self.Ds.float().view(-1)
+        As = -torch.exp(self.A_logs.float()).view(-1, self.d_state)
+        dt_projs_bias = self.dt_projs_bias.float().view(-1)
+
+        out_y = self.selective_scan(
+            xs, dts,
+            As, Bs, Cs, Ds, z=None,
+            delta_bias=dt_projs_bias,
+            delta_softplus=True,
+            return_last_state=False,
+        ).view(B, K, -1, L)
+        assert out_y.dtype == torch.float
+
+        y0 = out_y[:, 0]
+        y1 = torch.transpose(out_y[:, 1].view(B, -1, W, H), dim0=2, dim1=3).contiguous().view(B, -1, L)
+        if replace_mode == 'one_path':
+            y2 = torch.flip(out_y[:, 2], dims=[-1])
+            y3 = self._restore_graph_scan_output(out_y[:, 3], inv_perm)
+        else:
+            y2 = self._restore_graph_scan_output(out_y[:, 2], inv_perm)
+            y3 = self._restore_graph_scan_output(torch.flip(out_y[:, 3], dims=[-1]), inv_perm)
+
+        return y0, y2, y1, y3
+
     # an alternative to forward_corev1
     def forward_corev1(self, x: torch.Tensor):
         self.selective_scan = selective_scan_fn_v1
@@ -482,11 +600,20 @@ class VSSBlock(nn.Module):
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
         attn_drop_rate: float = 0,
         d_state: int = 16,
+        use_sp_scan: bool = False,
+        sp_scan_cfg=None,
         **kwargs,
     ):
         super().__init__()
         self.ln_1 = norm_layer(hidden_dim)
-        self.self_attention = SS2D(d_model=hidden_dim, dropout=attn_drop_rate, d_state=d_state, **kwargs)
+        self.self_attention = SS2D(
+            d_model=hidden_dim,
+            dropout=attn_drop_rate,
+            d_state=d_state,
+            use_sp_scan=use_sp_scan,
+            sp_scan_cfg=sp_scan_cfg,
+            **kwargs,
+        )
         self.drop_path = DropPath(drop_path)
 
     def forward(self, input: torch.Tensor):
@@ -517,11 +644,26 @@ class VSSLayer(nn.Module):
         downsample=None, 
         use_checkpoint=False, 
         d_state=16,
+        sp_scan_blocks=None,
+        sp_scan_cfg=None,
         **kwargs,
     ):
         super().__init__()
         self.dim = dim
         self.use_checkpoint = use_checkpoint
+
+        def _use_sp_scan_for_block(block_idx):
+            if sp_scan_blocks is None:
+                return False
+            if sp_scan_blocks == 'all':
+                return True
+            if sp_scan_blocks == 'last':
+                return block_idx == depth - 1
+            if isinstance(sp_scan_blocks, (list, tuple, set)):
+                return block_idx in sp_scan_blocks
+            raise ValueError(
+                "sp_scan_blocks must be None, 'last', 'all', or a list/tuple/set of indices."
+            )
 
         self.blocks = nn.ModuleList([
             VSSBlock(
@@ -530,6 +672,8 @@ class VSSLayer(nn.Module):
                 norm_layer=norm_layer,
                 attn_drop_rate=attn_drop,
                 d_state=d_state,
+                use_sp_scan=_use_sp_scan_for_block(i),
+                sp_scan_cfg=sp_scan_cfg,
             )
             for i in range(depth)])
         
@@ -630,7 +774,8 @@ class VSSM(nn.Module):
     def __init__(self, patch_size=4, in_chans=3, num_classes=1000, depths=[2, 2, 9, 2], depths_decoder=[2, 9, 2, 2],
                  dims=[96, 192, 384, 768], dims_decoder=[768, 384, 192, 96], d_state=16, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, patch_norm=True,
-                 use_checkpoint=False, use_sp_rgm=False, sp_rgm_cfg=None, **kwargs):
+                 use_checkpoint=False, use_sp_rgm=False, sp_rgm_cfg=None,
+                 use_sp_scan=False, sp_scan_cfg=None, sp_scan_stage=None, **kwargs):
         super().__init__()
         self.num_classes = num_classes
         self.num_layers = len(depths)
@@ -640,6 +785,13 @@ class VSSM(nn.Module):
         self.num_features = dims[-1]
         self.dims = dims
         self.use_sp_rgm = use_sp_rgm
+        self.use_sp_scan = use_sp_scan
+        self.sp_scan_cfg = dict(sp_scan_cfg or {})
+        self.sp_scan_stage = sp_scan_stage
+        if self.use_sp_rgm and self.use_sp_scan:
+            raise ValueError("use_sp_rgm and use_sp_scan cannot both be True.")
+        if self.use_sp_scan and self.sp_scan_stage != 'bottleneck_last':
+            raise ValueError("The first SPScan implementation supports sp_scan_stage='bottleneck_last' only.")
 
         self.patch_embed = PatchEmbed2D(patch_size=patch_size, in_chans=in_chans, embed_dim=self.embed_dim,
             norm_layer=norm_layer if patch_norm else None)
@@ -659,6 +811,9 @@ class VSSM(nn.Module):
 
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
+            sp_scan_blocks = None
+            if self.use_sp_scan and i_layer == self.num_layers - 1:
+                sp_scan_blocks = 'last'
             layer = VSSLayer(
                 dim=dims[i_layer],
                 depth=depths[i_layer],
@@ -669,6 +824,8 @@ class VSSM(nn.Module):
                 norm_layer=norm_layer,
                 downsample=PatchMerging2D if (i_layer < self.num_layers - 1) else None,
                 use_checkpoint=use_checkpoint,
+                sp_scan_blocks=sp_scan_blocks,
+                sp_scan_cfg=self.sp_scan_cfg if sp_scan_blocks is not None else None,
             )
             self.layers.append(layer)
 
@@ -730,6 +887,18 @@ class VSSM(nn.Module):
     def no_weight_decay_keywords(self):
         return {'relative_position_bias_table'}
 
+    @torch.jit.ignore
+    def get_sp_scan_stats(self):
+        """Return the most recent SPScan diagnostics from enabled SS2D blocks."""
+        latest_stats = None
+        for module in self.modules():
+            stats = getattr(module, 'last_sp_scan_stats', None)
+            if stats is not None:
+                latest_stats = dict(stats)
+        if latest_stats is not None:
+            latest_stats['sp_scan_stage'] = self.sp_scan_stage
+        return latest_stats
+
     def forward_features(self, x, return_aux=False):
         skip_list = []
         x = self.patch_embed(x)
@@ -749,6 +918,11 @@ class VSSM(nn.Module):
             x = x_nchw.permute(0, 2, 3, 1).contiguous()
             if return_aux:
                 aux['sp_rgm'] = sp_rgm_aux
+
+        if return_aux and self.use_sp_scan:
+            sp_scan_stats = self.get_sp_scan_stats()
+            if sp_scan_stats is not None:
+                aux['sp_scan'] = sp_scan_stats
 
         return x, skip_list, aux
     
@@ -790,4 +964,3 @@ class VSSM(nn.Module):
 
 
     
-

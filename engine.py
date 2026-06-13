@@ -76,6 +76,63 @@ def _format_path_modes(path_modes):
     return str(path_modes)
 
 
+def _to_float_or_none(value):
+    if value is None:
+        return None
+    if torch.is_tensor(value):
+        if value.numel() != 1:
+            return None
+        return float(value.detach().item())
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _get_model_attr(model, attr_name, default=None):
+    if hasattr(model, attr_name):
+        return getattr(model, attr_name)
+    if hasattr(model, 'module') and hasattr(model.module, attr_name):
+        return getattr(model.module, attr_name)
+    return default
+
+
+def _get_sp_scan_stats(model, config):
+    if not getattr(config, 'use_sp_scan', False):
+        return {}
+    getter = _get_model_attr(model, 'get_sp_scan_stats')
+    if getter is None:
+        return {}
+    stats = getter() or {}
+    sp_cfg = getattr(config, 'sp_scan_cfg', None) or {}
+    out = {
+        'loss_seg': None,
+        'loss_total': None,
+        'sp_scan_enabled': stats.get('sp_scan_enabled', True),
+        'replace_mode': stats.get('replace_mode', sp_cfg.get('replace_mode', 'NA')),
+        'sp_scan_stage': stats.get('sp_scan_stage', getattr(config, 'sp_scan_stage', 'NA')),
+        'num_regions_actual': stats.get('num_regions_actual'),
+        'feat_h': stats.get('feat_h'),
+        'feat_w': stats.get('feat_w'),
+        'Q_entropy': stats.get('Q_entropy'),
+        'q_max_mean': stats.get('q_max_mean'),
+        'q_max_min': stats.get('q_max_min'),
+        'empty_region_ratio': stats.get('empty_region_ratio'),
+        'region_mass_mean': stats.get('region_mass_mean'),
+        'region_mass_min': stats.get('region_mass_min'),
+        'region_mass_max': stats.get('region_mass_max'),
+        'region_mass_std': stats.get('region_mass_std'),
+        'region_mass_nonzero_ratio': stats.get('region_mass_nonzero_ratio'),
+        'region_mass_cv': stats.get('region_mass_cv'),
+        'dist_margin_mean': stats.get('dist_margin_mean'),
+        'logit_margin_mean': stats.get('logit_margin_mean'),
+        'feat_xy_dist_ratio': stats.get('feat_xy_dist_ratio'),
+        'perm_valid': stats.get('perm_valid'),
+        'uses_mamba': stats.get('uses_mamba'),
+        'path_types': stats.get('path_types'),
+    }
+    return out
+
+
 def _compute_train_loss(model_out, targets, criterion, config):
     if not getattr(config, 'use_sp_rgm', False):
         loss = criterion(model_out, targets)
@@ -172,6 +229,7 @@ def train_one_epoch(train_loader,
     model.train() 
  
     loss_list = []
+    sp_scan_epoch_values = {}
 
     for iter, data in enumerate(train_loader):
         step += 1
@@ -181,6 +239,29 @@ def train_one_epoch(train_loader,
 
         out = model(images, return_aux=True) if getattr(config, 'use_sp_rgm', False) else model(images)
         loss, loss_stats = _compute_train_loss(out, targets, criterion, config)
+        if getattr(config, 'use_sp_scan', False):
+            sp_scan_stats = _get_sp_scan_stats(model, config)
+            sp_scan_stats['loss_seg'] = loss.detach()
+            sp_scan_stats['loss_total'] = loss.detach()
+            loss_stats.update(sp_scan_stats)
+            for key in (
+                'Q_entropy',
+                'q_max_mean',
+                'q_max_min',
+                'empty_region_ratio',
+                'region_mass_mean',
+                'region_mass_min',
+                'region_mass_max',
+                'region_mass_std',
+                'region_mass_nonzero_ratio',
+                'region_mass_cv',
+                'dist_margin_mean',
+                'logit_margin_mean',
+                'feat_xy_dist_ratio',
+            ):
+                value = _to_float_or_none(loss_stats.get(key))
+                if value is not None:
+                    sp_scan_epoch_values.setdefault(key, []).append(value)
 
         loss.backward()
         optimizer.step()
@@ -235,10 +316,59 @@ def train_one_epoch(train_loader,
                     f"lambda_balance: {loss_stats['lambda_balance']}, "
                     f"lr: {now_lr}"
                 )
+            elif getattr(config, 'use_sp_scan', False):
+                log_info = (
+                    f"train: epoch {epoch}, iter:{iter}, "
+                    f"loss: {_format_log_value(loss_stats.get('loss_total'))}, "
+                    f"sp_scan_enabled: {_format_log_value(loss_stats.get('sp_scan_enabled'))}, "
+                    f"replace_mode: {_format_log_value(loss_stats.get('replace_mode'))}, "
+                    f"sp_scan_stage: {_format_log_value(loss_stats.get('sp_scan_stage'))}, "
+                    f"num_regions_actual: {_format_log_value(loss_stats.get('num_regions_actual'))}, "
+                    f"feat_h: {_format_log_value(loss_stats.get('feat_h'))}, "
+                    f"feat_w: {_format_log_value(loss_stats.get('feat_w'))}, "
+                    f"Q_entropy: {_format_log_value(loss_stats.get('Q_entropy'))}, "
+                    f"q_max_mean: {_format_log_value(loss_stats.get('q_max_mean'))}, "
+                    f"q_max_min: {_format_log_value(loss_stats.get('q_max_min'))}, "
+                    f"empty_region_ratio: {_format_log_value(loss_stats.get('empty_region_ratio'))}, "
+                    f"region_mass_mean: {_format_log_value(loss_stats.get('region_mass_mean'))}, "
+                    f"region_mass_min: {_format_log_value(loss_stats.get('region_mass_min'))}, "
+                    f"region_mass_max: {_format_log_value(loss_stats.get('region_mass_max'))}, "
+                    f"region_mass_std: {_format_log_value(loss_stats.get('region_mass_std'))}, "
+                    f"region_mass_nonzero_ratio: {_format_log_value(loss_stats.get('region_mass_nonzero_ratio'))}, "
+                    f"region_mass_cv: {_format_log_value(loss_stats.get('region_mass_cv'))}, "
+                    f"dist_margin_mean: {_format_log_value(loss_stats.get('dist_margin_mean'))}, "
+                    f"logit_margin_mean: {_format_log_value(loss_stats.get('logit_margin_mean'))}, "
+                    f"feat_xy_dist_ratio: {_format_log_value(loss_stats.get('feat_xy_dist_ratio'))}, "
+                    f"perm_valid: {_format_log_value(loss_stats.get('perm_valid'))}, "
+                    f"uses_mamba: {_format_log_value(loss_stats.get('uses_mamba'))}, "
+                    f"path_types: {_format_path_modes(loss_stats.get('path_types'))}, "
+                    f"lr: {now_lr}"
+                )
             else:
                 log_info = f'train: epoch {epoch}, iter:{iter}, loss: {np.mean(loss_list):.4f}, lr: {now_lr}'
             print(log_info)
             logger.info(log_info)
+    if getattr(config, 'use_sp_scan', False) and sp_scan_epoch_values:
+        summary = {key: float(np.mean(values)) for key, values in sp_scan_epoch_values.items()}
+        log_info = (
+            f"train epoch {epoch} sp_scan_mean: "
+            f"Q_entropy: {_format_log_value(summary.get('Q_entropy'))}, "
+            f"q_max_mean: {_format_log_value(summary.get('q_max_mean'))}, "
+            f"q_max_min: {_format_log_value(summary.get('q_max_min'))}, "
+            f"empty_region_ratio: {_format_log_value(summary.get('empty_region_ratio'))}, "
+            f"region_mass_mean: {_format_log_value(summary.get('region_mass_mean'))}, "
+            f"region_mass_min: {_format_log_value(summary.get('region_mass_min'))}, "
+            f"region_mass_max: {_format_log_value(summary.get('region_mass_max'))}, "
+            f"region_mass_std: {_format_log_value(summary.get('region_mass_std'))}, "
+            f"region_mass_nonzero_ratio: {_format_log_value(summary.get('region_mass_nonzero_ratio'))}, "
+            f"region_mass_cv: {_format_log_value(summary.get('region_mass_cv'))}, "
+            f"dist_margin_mean: {_format_log_value(summary.get('dist_margin_mean'))}, "
+            f"logit_margin_mean: {_format_log_value(summary.get('logit_margin_mean'))}, "
+            f"feat_xy_dist_ratio: {_format_log_value(summary.get('feat_xy_dist_ratio'))}"
+        )
+        print(log_info)
+        logger.info(log_info)
+
     scheduler.step() 
     return step
 

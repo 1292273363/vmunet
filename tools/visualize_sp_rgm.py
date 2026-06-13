@@ -25,10 +25,14 @@ def _load_config(module_path):
 
 def _enable_sp_rgm(config):
     config.use_sp_rgm = True
+    config.use_sp_scan = False
     config.sp_rgm_cfg = dict(config.sp_rgm_cfg)
     config.model_config = dict(config.model_config)
     config.model_config['use_sp_rgm'] = True
     config.model_config['sp_rgm_cfg'] = config.sp_rgm_cfg
+    config.model_config['use_sp_scan'] = False
+    config.model_config['sp_scan_cfg'] = None
+    config.model_config['sp_scan_stage'] = None
 
 
 def _build_dataset(config, split):
@@ -65,6 +69,9 @@ def _build_model(config, checkpoint, device):
         load_ckpt_path=model_cfg['load_ckpt_path'],
         use_sp_rgm=model_cfg['use_sp_rgm'],
         sp_rgm_cfg=model_cfg['sp_rgm_cfg'],
+        use_sp_scan=model_cfg.get('use_sp_scan', getattr(config, 'use_sp_scan', False)),
+        sp_scan_cfg=model_cfg.get('sp_scan_cfg', getattr(config, 'sp_scan_cfg', None)),
+        sp_scan_stage=model_cfg.get('sp_scan_stage', getattr(config, 'sp_scan_stage', None)),
     )
 
     if checkpoint is not None:

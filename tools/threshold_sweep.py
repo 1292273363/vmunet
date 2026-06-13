@@ -31,6 +31,9 @@ def _build_model(config, checkpoint_path, device):
         load_ckpt_path=model_cfg['load_ckpt_path'],
         use_sp_rgm=model_cfg.get('use_sp_rgm', False),
         sp_rgm_cfg=model_cfg.get('sp_rgm_cfg'),
+        use_sp_scan=model_cfg.get('use_sp_scan', getattr(config, 'use_sp_scan', False)),
+        sp_scan_cfg=model_cfg.get('sp_scan_cfg', getattr(config, 'sp_scan_cfg', None)),
+        sp_scan_stage=model_cfg.get('sp_scan_stage', getattr(config, 'sp_scan_stage', None)),
     )
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
     load_checkpoint_state(model, checkpoint, strict=True)

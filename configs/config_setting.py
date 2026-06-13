@@ -10,6 +10,9 @@ class setting_config:
 
     network = 'vmunet'
     use_sp_rgm = False
+    use_sp_scan = False
+    sp_scan_stage = None
+    sp_scan_cfg = None
     sp_rgm_cfg = {
         'num_regions': (8, 8),
         'num_iters': 5,
@@ -37,6 +40,9 @@ class setting_config:
         'use_bcsf': True,
         'use_sp_rgm': use_sp_rgm,
         'sp_rgm_cfg': sp_rgm_cfg,
+        'use_sp_scan': use_sp_scan,
+        'sp_scan_cfg': sp_scan_cfg,
+        'sp_scan_stage': sp_scan_stage,
     }
     lambda_region = 0.2
     lambda_compact = 1e-3

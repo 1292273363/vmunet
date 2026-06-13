@@ -39,6 +39,7 @@ def _save_metric_checkpoint(path, model, epoch, metrics, checkpoint_type):
             'specificity': metrics.get('specificity'),
             'sensitivity': metrics.get('sensitivity'),
             'confusion_matrix': metrics.get('confusion_matrix'),
+            'sp_scan_stats': metrics.get('sp_scan_stats'),
             'model_state_dict': model.state_dict(),
         },
         path,
@@ -52,6 +53,17 @@ def _format_best_record(record):
         f"epoch={record['epoch']}, loss={record['loss']:.4f}, "
         f"dice={record['dice']:.4f}, iou={record['iou']:.4f}"
     )
+
+
+def _get_sp_scan_stats_for_checkpoint(model, config):
+    if not getattr(config, 'use_sp_scan', False):
+        return None
+    getter = getattr(model, 'get_sp_scan_stats', None)
+    if getter is None and hasattr(model, 'module'):
+        getter = getattr(model.module, 'get_sp_scan_stats', None)
+    if getter is None:
+        return None
+    return getter()
 
 
 
@@ -119,6 +131,9 @@ def main(config):
             load_ckpt_path=model_cfg['load_ckpt_path'],
             use_sp_rgm=model_cfg.get('use_sp_rgm', False),
             sp_rgm_cfg=model_cfg.get('sp_rgm_cfg'),
+            use_sp_scan=model_cfg.get('use_sp_scan', getattr(config, 'use_sp_scan', False)),
+            sp_scan_cfg=model_cfg.get('sp_scan_cfg', getattr(config, 'sp_scan_cfg', None)),
+            sp_scan_stage=model_cfg.get('sp_scan_stage', getattr(config, 'sp_scan_stage', None)),
         )
         model.load_from()
         
@@ -222,6 +237,9 @@ def main(config):
                 logger,
                 config
             )
+        sp_scan_stats = _get_sp_scan_stats_for_checkpoint(model, config)
+        if sp_scan_stats is not None:
+            val_metrics['sp_scan_stats'] = sp_scan_stats
 
         if val_metrics['loss'] < best_records['best_loss']['value']:
             best_records['best_loss'] = {

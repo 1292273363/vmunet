@@ -13,12 +13,17 @@ class VMUNet(nn.Module):
                  load_ckpt_path=None,
                  use_sp_rgm=False,
                  sp_rgm_cfg=None,
+                 use_sp_scan=False,
+                 sp_scan_cfg=None,
+                 sp_scan_stage=None,
                 ):
         super().__init__()
 
         self.load_ckpt_path = load_ckpt_path
         self.num_classes = num_classes
         self.input_channels = input_channels
+        if use_sp_rgm and use_sp_scan:
+            raise ValueError("VMUNet does not allow use_sp_rgm and use_sp_scan at the same time.")
 
         self.vmunet = VSSM(in_chans=input_channels,
                            num_classes=num_classes,
@@ -27,6 +32,9 @@ class VMUNet(nn.Module):
                            drop_path_rate=drop_path_rate,
                            use_sp_rgm=use_sp_rgm,
                            sp_rgm_cfg=sp_rgm_cfg,
+                           use_sp_scan=use_sp_scan,
+                           sp_scan_cfg=sp_scan_cfg,
+                           sp_scan_stage=sp_scan_stage,
                         )
     
     def forward(self, x, return_aux=False):
@@ -52,26 +60,53 @@ class VMUNet(nn.Module):
         if return_aux:
             return logits, aux
         return logits
-    
+
+    def get_sp_scan_stats(self):
+        return self.vmunet.get_sp_scan_stats()
+
+    @staticmethod
+    def _extract_checkpoint_state(checkpoint):
+        if isinstance(checkpoint, dict):
+            if 'model_state_dict' in checkpoint:
+                return checkpoint['model_state_dict']
+            if 'model' in checkpoint:
+                return checkpoint['model']
+        return checkpoint
+
+    def _safe_load_state_dict(self, pretrained_dict, label):
+        model_dict = self.vmunet.state_dict()
+        loadable_dict = {}
+        unexpected_keys = []
+        shape_mismatch = []
+
+        for key, value in pretrained_dict.items():
+            if key not in model_dict:
+                unexpected_keys.append(key)
+                continue
+            if model_dict[key].shape != value.shape:
+                shape_mismatch.append((key, tuple(value.shape), tuple(model_dict[key].shape)))
+                continue
+            loadable_dict[key] = value
+
+        load_result = self.vmunet.load_state_dict(loadable_dict, strict=False)
+        print(
+            f"{label}: loaded={len(loadable_dict)}, missing={len(load_result.missing_keys)}, "
+            f"unexpected={len(unexpected_keys)}, shape_mismatch={len(shape_mismatch)}"
+        )
+        if load_result.missing_keys:
+            print(f"{label} missing key examples: {load_result.missing_keys[:20]}")
+        if unexpected_keys:
+            print(f"{label} unexpected key examples: {unexpected_keys[:20]}")
+        if shape_mismatch:
+            print(f"{label} shape mismatch examples: {shape_mismatch[:10]}")
+
     def load_from(self):
         if self.load_ckpt_path is not None:
-            model_dict = self.vmunet.state_dict()
-            modelCheckpoint = torch.load(self.load_ckpt_path)
-            pretrained_dict = modelCheckpoint['model']
-            # 过滤操作
-            new_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict.keys()}
-            model_dict.update(new_dict)
-            # 打印出来，更新了多少的参数
-            print('Total model_dict: {}, Total pretrained_dict: {}, update: {}'.format(len(model_dict), len(pretrained_dict), len(new_dict)))
-            self.vmunet.load_state_dict(model_dict)
-
-            not_loaded_keys = [k for k in pretrained_dict.keys() if k not in new_dict.keys()]
-            print('Not loaded keys:', not_loaded_keys)
+            modelCheckpoint = torch.load(self.load_ckpt_path, map_location='cpu')
+            pretrained_odict = self._extract_checkpoint_state(modelCheckpoint)
+            self._safe_load_state_dict(pretrained_odict, 'encoder pretrained')
             print("encoder loaded finished!")
 
-            model_dict = self.vmunet.state_dict()
-            modelCheckpoint = torch.load(self.load_ckpt_path)
-            pretrained_odict = modelCheckpoint['model']
             pretrained_dict = {}
             for k, v in pretrained_odict.items():
                 if 'layers.0' in k: 
@@ -86,14 +121,5 @@ class VMUNet(nn.Module):
                 elif 'layers.3' in k: 
                     new_k = k.replace('layers.3', 'layers_up.0')
                     pretrained_dict[new_k] = v
-            # 过滤操作
-            new_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict.keys()}
-            model_dict.update(new_dict)
-            # 打印出来，更新了多少的参数
-            print('Total model_dict: {}, Total pretrained_dict: {}, update: {}'.format(len(model_dict), len(pretrained_dict), len(new_dict)))
-            self.vmunet.load_state_dict(model_dict)
-            
-            # 找到没有加载的键(keys)
-            not_loaded_keys = [k for k in pretrained_dict.keys() if k not in new_dict.keys()]
-            print('Not loaded keys:', not_loaded_keys)
+            self._safe_load_state_dict(pretrained_dict, 'decoder pretrained')
             print("decoder loaded finished!")
