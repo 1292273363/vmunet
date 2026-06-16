@@ -12,6 +12,7 @@ class setting_config:
     use_sp_rgm = False
     use_sp_scan = False
     sp_scan_stage = None
+    sp_scan_blocks = None
     sp_scan_cfg = None
     sp_rgm_cfg = {
         'num_regions': (8, 8),
@@ -43,6 +44,7 @@ class setting_config:
         'use_sp_scan': use_sp_scan,
         'sp_scan_cfg': sp_scan_cfg,
         'sp_scan_stage': sp_scan_stage,
+        'sp_scan_blocks': sp_scan_blocks,
     }
     lambda_region = 0.2
     lambda_compact = 1e-3

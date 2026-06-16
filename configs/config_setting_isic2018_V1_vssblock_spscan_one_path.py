@@ -13,6 +13,7 @@ class setting_config(base_setting_config):
     use_sp_rgm = False
     use_sp_scan = True
     sp_scan_stage = 'bottleneck_last'
+    sp_scan_blocks = 'last'
     return_aux = False
 
     lambda_region = 0.0
@@ -45,4 +46,5 @@ class setting_config(base_setting_config):
         use_sp_scan=True,
         sp_scan_cfg=sp_scan_cfg,
         sp_scan_stage=sp_scan_stage,
+        sp_scan_blocks=sp_scan_blocks,
     )

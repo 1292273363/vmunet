@@ -22,4 +22,5 @@ class setting_config(base_setting_config):
         use_sp_scan=True,
         sp_scan_cfg=sp_scan_cfg,
         sp_scan_stage=base_setting_config.sp_scan_stage,
+        sp_scan_blocks=base_setting_config.sp_scan_blocks,
     )

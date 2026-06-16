@@ -775,7 +775,7 @@ class VSSM(nn.Module):
                  dims=[96, 192, 384, 768], dims_decoder=[768, 384, 192, 96], d_state=16, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, patch_norm=True,
                  use_checkpoint=False, use_sp_rgm=False, sp_rgm_cfg=None,
-                 use_sp_scan=False, sp_scan_cfg=None, sp_scan_stage=None, **kwargs):
+                 use_sp_scan=False, sp_scan_cfg=None, sp_scan_stage=None, sp_scan_blocks=None, **kwargs):
         super().__init__()
         self.num_classes = num_classes
         self.num_layers = len(depths)
@@ -788,10 +788,25 @@ class VSSM(nn.Module):
         self.use_sp_scan = use_sp_scan
         self.sp_scan_cfg = dict(sp_scan_cfg or {})
         self.sp_scan_stage = sp_scan_stage
+        self.sp_scan_blocks = sp_scan_blocks
+        self.bottleneck_depth = depths[-1]
+        self.enabled_sp_scan_block_indices = []
         if self.use_sp_rgm and self.use_sp_scan:
             raise ValueError("use_sp_rgm and use_sp_scan cannot both be True.")
-        if self.use_sp_scan and self.sp_scan_stage != 'bottleneck_last':
-            raise ValueError("The first SPScan implementation supports sp_scan_stage='bottleneck_last' only.")
+        if self.use_sp_scan:
+            if self.sp_scan_stage == 'bottleneck_last':
+                self.sp_scan_blocks = 'last'
+            elif self.sp_scan_stage == 'bottleneck_all':
+                self.sp_scan_stage = 'bottleneck'
+                self.sp_scan_blocks = 'all'
+            elif self.sp_scan_stage == 'bottleneck':
+                self.sp_scan_blocks = self.sp_scan_blocks or self.sp_scan_cfg.get('sp_scan_blocks', 'last')
+            else:
+                raise ValueError(
+                    "SPScan supports sp_scan_stage in ['bottleneck_last', 'bottleneck', 'bottleneck_all']."
+                )
+            if self.sp_scan_blocks not in {'last', 'all'} and not isinstance(self.sp_scan_blocks, (list, tuple, set)):
+                raise ValueError("sp_scan_blocks must be 'last', 'all', or a list/tuple/set of block indices.")
 
         self.patch_embed = PatchEmbed2D(patch_size=patch_size, in_chans=in_chans, embed_dim=self.embed_dim,
             norm_layer=norm_layer if patch_norm else None)
@@ -811,9 +826,15 @@ class VSSM(nn.Module):
 
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
-            sp_scan_blocks = None
+            layer_sp_scan_blocks = None
             if self.use_sp_scan and i_layer == self.num_layers - 1:
-                sp_scan_blocks = 'last'
+                layer_sp_scan_blocks = self.sp_scan_blocks
+                if layer_sp_scan_blocks == 'last':
+                    self.enabled_sp_scan_block_indices = [depths[i_layer] - 1]
+                elif layer_sp_scan_blocks == 'all':
+                    self.enabled_sp_scan_block_indices = list(range(depths[i_layer]))
+                else:
+                    self.enabled_sp_scan_block_indices = sorted(int(idx) for idx in layer_sp_scan_blocks)
             layer = VSSLayer(
                 dim=dims[i_layer],
                 depth=depths[i_layer],
@@ -824,8 +845,8 @@ class VSSM(nn.Module):
                 norm_layer=norm_layer,
                 downsample=PatchMerging2D if (i_layer < self.num_layers - 1) else None,
                 use_checkpoint=use_checkpoint,
-                sp_scan_blocks=sp_scan_blocks,
-                sp_scan_cfg=self.sp_scan_cfg if sp_scan_blocks is not None else None,
+                sp_scan_blocks=layer_sp_scan_blocks,
+                sp_scan_cfg=self.sp_scan_cfg if layer_sp_scan_blocks is not None else None,
             )
             self.layers.append(layer)
 
@@ -889,15 +910,47 @@ class VSSM(nn.Module):
 
     @torch.jit.ignore
     def get_sp_scan_stats(self):
-        """Return the most recent SPScan diagnostics from enabled SS2D blocks."""
-        latest_stats = None
+        """Return aggregated SPScan diagnostics from enabled SS2D blocks."""
+        stats_list = []
         for module in self.modules():
             stats = getattr(module, 'last_sp_scan_stats', None)
             if stats is not None:
-                latest_stats = dict(stats)
-        if latest_stats is not None:
-            latest_stats['sp_scan_stage'] = self.sp_scan_stage
-        return latest_stats
+                stats_list.append(dict(stats))
+        if not stats_list:
+            return None
+
+        aggregated = {}
+        numeric_keys = set()
+        for stats in stats_list:
+            for key, value in stats.items():
+                if torch.is_tensor(value) and value.numel() == 1:
+                    numeric_keys.add(key)
+                elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                    numeric_keys.add(key)
+
+        for key in numeric_keys:
+            values = []
+            for stats in stats_list:
+                value = stats.get(key)
+                if torch.is_tensor(value) and value.numel() == 1:
+                    values.append(value.detach().float())
+                elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                    values.append(torch.tensor(float(value)))
+            if values:
+                aggregated[key] = torch.stack([v.to(values[0].device) for v in values]).mean()
+
+        latest_stats = stats_list[-1]
+        for key, value in latest_stats.items():
+            aggregated.setdefault(key, value)
+
+        aggregated['sp_scan_stage'] = self.sp_scan_stage
+        aggregated['sp_scan_blocks'] = self.sp_scan_blocks
+        aggregated['enabled_sp_scan_block_indices'] = tuple(self.enabled_sp_scan_block_indices)
+        aggregated['bottleneck_depth'] = self.bottleneck_depth
+        aggregated['num_enabled_sp_scan_blocks'] = len(self.enabled_sp_scan_block_indices)
+        aggregated['perm_valid'] = all(bool(stats.get('perm_valid', False)) for stats in stats_list)
+        aggregated['uses_mamba'] = all(bool(stats.get('uses_mamba', False)) for stats in stats_list)
+        return aggregated
 
     def forward_features(self, x, return_aux=False):
         skip_list = []

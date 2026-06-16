@@ -16,6 +16,7 @@ class VMUNet(nn.Module):
                  use_sp_scan=False,
                  sp_scan_cfg=None,
                  sp_scan_stage=None,
+                 sp_scan_blocks=None,
                 ):
         super().__init__()
 
@@ -35,6 +36,7 @@ class VMUNet(nn.Module):
                            use_sp_scan=use_sp_scan,
                            sp_scan_cfg=sp_scan_cfg,
                            sp_scan_stage=sp_scan_stage,
+                           sp_scan_blocks=sp_scan_blocks,
                         )
     
     def forward(self, x, return_aux=False):

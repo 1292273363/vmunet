@@ -110,6 +110,9 @@ def _get_sp_scan_stats(model, config):
         'sp_scan_enabled': stats.get('sp_scan_enabled', True),
         'replace_mode': stats.get('replace_mode', sp_cfg.get('replace_mode', 'NA')),
         'sp_scan_stage': stats.get('sp_scan_stage', getattr(config, 'sp_scan_stage', 'NA')),
+        'sp_scan_blocks': stats.get('sp_scan_blocks', getattr(config, 'sp_scan_blocks', 'NA')),
+        'enabled_sp_scan_block_indices': stats.get('enabled_sp_scan_block_indices'),
+        'bottleneck_depth': stats.get('bottleneck_depth'),
         'num_regions_actual': stats.get('num_regions_actual'),
         'feat_h': stats.get('feat_h'),
         'feat_w': stats.get('feat_w'),
@@ -323,6 +326,9 @@ def train_one_epoch(train_loader,
                     f"sp_scan_enabled: {_format_log_value(loss_stats.get('sp_scan_enabled'))}, "
                     f"replace_mode: {_format_log_value(loss_stats.get('replace_mode'))}, "
                     f"sp_scan_stage: {_format_log_value(loss_stats.get('sp_scan_stage'))}, "
+                    f"sp_scan_blocks: {_format_log_value(loss_stats.get('sp_scan_blocks'))}, "
+                    f"enabled_sp_scan_block_indices: {_format_path_modes(loss_stats.get('enabled_sp_scan_block_indices'))}, "
+                    f"bottleneck_depth: {_format_log_value(loss_stats.get('bottleneck_depth'))}, "
                     f"num_regions_actual: {_format_log_value(loss_stats.get('num_regions_actual'))}, "
                     f"feat_h: {_format_log_value(loss_stats.get('feat_h'))}, "
                     f"feat_w: {_format_log_value(loss_stats.get('feat_w'))}, "
@@ -352,6 +358,16 @@ def train_one_epoch(train_loader,
         summary = {key: float(np.mean(values)) for key, values in sp_scan_epoch_values.items()}
         log_info = (
             f"train epoch {epoch} sp_scan_mean: "
+            f"sp_scan_stage: {_format_log_value(loss_stats.get('sp_scan_stage'))}, "
+            f"sp_scan_blocks: {_format_log_value(loss_stats.get('sp_scan_blocks'))}, "
+            f"enabled_sp_scan_block_indices: {_format_path_modes(loss_stats.get('enabled_sp_scan_block_indices'))}, "
+            f"bottleneck_depth: {_format_log_value(loss_stats.get('bottleneck_depth'))}, "
+            f"replace_mode: {_format_log_value(loss_stats.get('replace_mode'))}, "
+            f"path_types: {_format_path_modes(loss_stats.get('path_types'))}, "
+            f"uses_mamba: {_format_log_value(loss_stats.get('uses_mamba'))}, "
+            f"num_regions_actual: {_format_log_value(loss_stats.get('num_regions_actual'))}, "
+            f"feat_h: {_format_log_value(loss_stats.get('feat_h'))}, "
+            f"feat_w: {_format_log_value(loss_stats.get('feat_w'))}, "
             f"Q_entropy: {_format_log_value(summary.get('Q_entropy'))}, "
             f"q_max_mean: {_format_log_value(summary.get('q_max_mean'))}, "
             f"q_max_min: {_format_log_value(summary.get('q_max_min'))}, "

@@ -134,6 +134,7 @@ def main(config):
             use_sp_scan=model_cfg.get('use_sp_scan', getattr(config, 'use_sp_scan', False)),
             sp_scan_cfg=model_cfg.get('sp_scan_cfg', getattr(config, 'sp_scan_cfg', None)),
             sp_scan_stage=model_cfg.get('sp_scan_stage', getattr(config, 'sp_scan_stage', None)),
+            sp_scan_blocks=model_cfg.get('sp_scan_blocks', getattr(config, 'sp_scan_blocks', None)),
         )
         model.load_from()
         
