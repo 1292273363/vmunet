@@ -322,17 +322,39 @@ class SS2D(nn.Module):
 
         self.use_sp_scan = use_sp_scan
         self.sp_scan_cfg = dict(sp_scan_cfg or {})
+        self.sp_scan_mode = self.sp_scan_cfg.get('mode', 'replacement')
         self.sp_scan_replace_mode = self.sp_scan_cfg.get('replace_mode', 'two_paths')
+        self.extra_path_types = ()
         self.last_sp_scan_stats = None
         self.sp_scan_soft_slic = None
+        self.gamma_graph = None
+        self.gamma_reverse_graph = None
         if self.use_sp_scan:
-            if self.sp_scan_replace_mode not in {'none', 'one_path', 'two_paths'}:
-                raise ValueError(
-                    "SS2D sp_scan replace_mode must be one of "
-                    "['none', 'one_path', 'two_paths']."
-                )
             if self.sp_scan_cfg.get('graph_order', 'greedy') != 'greedy':
                 raise ValueError("SS2D sp_scan currently supports graph_order='greedy' only.")
+            if self.sp_scan_mode == 'replacement':
+                if self.sp_scan_replace_mode not in {'none', 'one_path', 'two_paths'}:
+                    raise ValueError(
+                        "SS2D sp_scan replace_mode must be one of "
+                        "['none', 'one_path', 'two_paths']."
+                    )
+            elif self.sp_scan_mode == 'extra_path':
+                self.extra_path_types = tuple(self.sp_scan_cfg.get('extra_path_types', ()))
+                if not self.extra_path_types:
+                    raise ValueError("extra_path mode requires at least one extra_path_types entry.")
+                unknown_types = set(self.extra_path_types) - {'graph', 'reverse_graph'}
+                if unknown_types:
+                    raise ValueError(
+                        "extra_path_types supports only ['graph', 'reverse_graph']; "
+                        f"got {sorted(unknown_types)}."
+                    )
+                gamma_sp_init = float(self.sp_scan_cfg.get('gamma_sp_init', 1e-3))
+                if 'graph' in self.extra_path_types:
+                    self.gamma_graph = nn.Parameter(torch.tensor(gamma_sp_init, **factory_kwargs))
+                if 'reverse_graph' in self.extra_path_types:
+                    self.gamma_reverse_graph = nn.Parameter(torch.tensor(gamma_sp_init, **factory_kwargs))
+            else:
+                raise ValueError("SS2D sp_scan mode must be 'replacement' or 'extra_path'.")
             soft_slic_cfg = {
                 'num_regions': self.sp_scan_cfg.get('num_regions', (2, 2)),
                 'num_iters': self.sp_scan_cfg.get('num_iters', 5),
@@ -348,7 +370,7 @@ class SS2D(nn.Module):
         # self.selective_scan = selective_scan_fn
         self.forward_core = (
             self.forward_core_sp_scan
-            if self.use_sp_scan and self.sp_scan_replace_mode != 'none'
+            if self.use_sp_scan and self.sp_scan_mode == 'replacement' and self.sp_scan_replace_mode != 'none'
             else self.forward_corev0
         )
 
@@ -457,6 +479,114 @@ class SS2D(nn.Module):
         y_tokens = batched_gather_tokens(y_tokens, inv_perm)
         return y_tokens.transpose(1, 2).contiguous()
 
+    def _build_sp_scan_permutation(self, x):
+        """Return graph ordering for dense tokens without changing their representation."""
+        return build_superpixel_graph_token_permutation(
+            x,
+            self.sp_scan_soft_slic,
+            k_spatial=self.sp_scan_cfg.get('k_spatial', 3),
+            k_feature=self.sp_scan_cfg.get('k_feature', 3),
+            alpha=self.sp_scan_cfg.get('alpha', 0.5),
+            beta=self.sp_scan_cfg.get('beta', 0.5),
+            token_inner_order=self.sp_scan_cfg.get('token_inner_order', 'raster'),
+            detach_order=self.sp_scan_cfg.get('detach_order', True),
+        )
+
+    def _run_extra_selective_scan(self, paths, path_indices):
+        """Scan extra paths while reusing the original K=4 SS2D parameters.
+
+        Args:
+            paths: Tensor[B, P, D, L].
+            path_indices: tuple/list of original SS2D path indices in [0, 3].
+        """
+        self.selective_scan = selective_scan_fn
+        B, num_paths, _, L = paths.shape
+        indices = torch.as_tensor(path_indices, device=paths.device, dtype=torch.long)
+
+        x_proj_weight = self.x_proj_weight.index_select(0, indices)
+        dt_projs_weight = self.dt_projs_weight.index_select(0, indices)
+        dt_projs_bias = self.dt_projs_bias.index_select(0, indices)
+        Ds = self.Ds.float().view(4, self.d_inner).index_select(0, indices).reshape(-1)
+        As = -torch.exp(self.A_logs.float()).view(4, self.d_inner, self.d_state)
+        As = As.index_select(0, indices).reshape(-1, self.d_state)
+
+        x_dbl = torch.einsum("b p d l, p c d -> b p c l", paths, x_proj_weight)
+        dts, Bs, Cs = torch.split(x_dbl, [self.dt_rank, self.d_state, self.d_state], dim=2)
+        dts = torch.einsum("b p r l, p d r -> b p d l", dts, dt_projs_weight)
+
+        xs = paths.float().reshape(B, -1, L)
+        dts = dts.contiguous().float().reshape(B, -1, L)
+        Bs = Bs.float()
+        Cs = Cs.float()
+
+        out_y = self.selective_scan(
+            xs,
+            dts,
+            As,
+            Bs,
+            Cs,
+            Ds,
+            z=None,
+            delta_bias=dt_projs_bias.float().reshape(-1),
+            delta_softplus=True,
+            return_last_state=False,
+        ).view(B, num_paths, -1, L)
+        assert out_y.dtype == torch.float
+        return out_y
+
+    def forward_core_extra_path(self, x: torch.Tensor):
+        """Keep original SS2D paths and add graph-ordered paths as gated residuals."""
+        B, _, H, W = x.shape
+        L = H * W
+
+        # Preserve the original four-path VMamba computation exactly.
+        y0, y1, y2, y3 = self.forward_corev0(x)
+        y_original = y0 + y1 + y2 + y3
+
+        perm, inv_perm, sp_stats = self._build_sp_scan_permutation(x)
+        raster_tokens = x.view(B, -1, L).transpose(1, 2).contiguous()
+        graph_tokens = batched_gather_tokens(raster_tokens, perm)
+        graph_path = graph_tokens.transpose(1, 2).contiguous()
+        reverse_graph_path = torch.flip(graph_path, dims=[-1])
+
+        # E1 reuses the path3 parameters used by V1's graph replacement.
+        # E2 reuses path2 for graph and path3 for reverse_graph, matching V2.
+        extra_paths = []
+        extra_indices = []
+        if 'graph' in self.extra_path_types:
+            graph_param_index = 2 if 'reverse_graph' in self.extra_path_types else 3
+            extra_paths.append(graph_path)
+            extra_indices.append(graph_param_index)
+        if 'reverse_graph' in self.extra_path_types:
+            extra_paths.append(reverse_graph_path)
+            extra_indices.append(3)
+
+        extra_outputs = self._run_extra_selective_scan(
+            torch.stack(extra_paths, dim=1),
+            extra_indices,
+        )
+        output_idx = 0
+        y_graph = None
+        y_reverse_graph = None
+        if 'graph' in self.extra_path_types:
+            y_graph = self._restore_graph_scan_output(extra_outputs[:, output_idx], inv_perm)
+            output_idx += 1
+        if 'reverse_graph' in self.extra_path_types:
+            y_reverse_graph = self._restore_graph_scan_output(
+                torch.flip(extra_outputs[:, output_idx], dims=[-1]),
+                inv_perm,
+            )
+
+        self.last_sp_scan_stats = dict(sp_stats)
+        self.last_sp_scan_stats.update({
+            'sp_scan_mode': 'extra_path',
+            'extra_path_types': self.extra_path_types,
+            'extra_path_param_indices': tuple(extra_indices),
+            'path_types': ('raster', 'transpose', 'reverse_raster', 'reverse_transpose'),
+            'uses_mamba': 'selective_scan_fn' in globals(),
+        })
+        return y_original, y_graph, y_reverse_graph
+
     def forward_core_sp_scan(self, x: torch.Tensor):
         """Selective scan with one or two dense-token paths ordered by a superpixel graph."""
         self.selective_scan = selective_scan_fn
@@ -469,16 +599,7 @@ class SS2D(nn.Module):
         transpose_raster = torch.transpose(x, dim0=2, dim1=3).contiguous().view(B, -1, L)
         reverse_raster = torch.flip(raster, dims=[-1])
 
-        perm, inv_perm, sp_stats = build_superpixel_graph_token_permutation(
-            x,
-            self.sp_scan_soft_slic,
-            k_spatial=self.sp_scan_cfg.get('k_spatial', 3),
-            k_feature=self.sp_scan_cfg.get('k_feature', 3),
-            alpha=self.sp_scan_cfg.get('alpha', 0.5),
-            beta=self.sp_scan_cfg.get('beta', 0.5),
-            token_inner_order=self.sp_scan_cfg.get('token_inner_order', 'raster'),
-            detach_order=self.sp_scan_cfg.get('detach_order', True),
-        )
+        perm, inv_perm, sp_stats = self._build_sp_scan_permutation(x)
         x_tokens = raster.transpose(1, 2).contiguous()  # [B, L, D]
         graph_tokens = batched_gather_tokens(x_tokens, perm)
         graph_path = graph_tokens.transpose(1, 2).contiguous()  # [B, D, L]
@@ -580,9 +701,46 @@ class SS2D(nn.Module):
 
         x = x.permute(0, 3, 1, 2).contiguous()
         x = self.act(self.conv2d(x)) # (b, d, h, w)
-        y1, y2, y3, y4 = self.forward_core(x)
-        assert y1.dtype == torch.float32
-        y = y1 + y2 + y3 + y4
+        if self.use_sp_scan and self.sp_scan_mode == 'extra_path':
+            y_original, y_graph, y_reverse_graph = self.forward_core_extra_path(x)
+            assert y_original.dtype == torch.float32
+            y = y_original
+            gamma_values = []
+
+            if y_graph is not None:
+                y = y + self.gamma_graph * y_graph
+                gamma_values.append(self.gamma_graph)
+            if y_reverse_graph is not None:
+                y = y + self.gamma_reverse_graph * y_reverse_graph
+                gamma_values.append(self.gamma_reverse_graph)
+
+            def _rms_norm(tensor):
+                return tensor.float().square().mean().sqrt().detach()
+
+            stats = self.last_sp_scan_stats
+            stats['gamma_graph'] = self.gamma_graph.detach() if self.gamma_graph is not None else None
+            stats['gamma_reverse_graph'] = (
+                self.gamma_reverse_graph.detach() if self.gamma_reverse_graph is not None else None
+            )
+            if gamma_values:
+                gamma_stack = torch.stack(gamma_values)
+                stats['gamma_sp_mean'] = gamma_stack.mean().detach()
+                stats['gamma_sp_abs_mean'] = gamma_stack.abs().mean().detach()
+            stats['y_original_norm'] = _rms_norm(y_original)
+            if y_graph is not None:
+                stats['y_graph_norm'] = _rms_norm(y_graph)
+                stats['graph_orig_norm_ratio'] = (
+                    stats['y_graph_norm'] / stats['y_original_norm'].clamp_min(1e-6)
+                )
+            if y_reverse_graph is not None:
+                stats['y_reverse_graph_norm'] = _rms_norm(y_reverse_graph)
+                stats['reverse_graph_orig_norm_ratio'] = (
+                    stats['y_reverse_graph_norm'] / stats['y_original_norm'].clamp_min(1e-6)
+                )
+        else:
+            y1, y2, y3, y4 = self.forward_core(x)
+            assert y1.dtype == torch.float32
+            y = y1 + y2 + y3 + y4
         y = torch.transpose(y, dim0=1, dim1=2).contiguous().view(B, H, W, -1)
         y = self.out_norm(y)
         y = y * F.silu(z)
@@ -659,10 +817,12 @@ class VSSLayer(nn.Module):
                 return True
             if sp_scan_blocks == 'last':
                 return block_idx == depth - 1
+            if sp_scan_blocks == 'last2':
+                return block_idx >= max(depth - 2, 0)
             if isinstance(sp_scan_blocks, (list, tuple, set)):
                 return block_idx in sp_scan_blocks
             raise ValueError(
-                "sp_scan_blocks must be None, 'last', 'all', or a list/tuple/set of indices."
+                "sp_scan_blocks must be None, 'last', 'last2', 'all', or a list/tuple/set of indices."
             )
 
         self.blocks = nn.ModuleList([
@@ -805,8 +965,10 @@ class VSSM(nn.Module):
                 raise ValueError(
                     "SPScan supports sp_scan_stage in ['bottleneck_last', 'bottleneck', 'bottleneck_all']."
                 )
-            if self.sp_scan_blocks not in {'last', 'all'} and not isinstance(self.sp_scan_blocks, (list, tuple, set)):
-                raise ValueError("sp_scan_blocks must be 'last', 'all', or a list/tuple/set of block indices.")
+            if self.sp_scan_blocks not in {'last', 'last2', 'all'} and not isinstance(self.sp_scan_blocks, (list, tuple, set)):
+                raise ValueError(
+                    "sp_scan_blocks must be 'last', 'last2', 'all', or a list/tuple/set of block indices."
+                )
 
         self.patch_embed = PatchEmbed2D(patch_size=patch_size, in_chans=in_chans, embed_dim=self.embed_dim,
             norm_layer=norm_layer if patch_norm else None)
@@ -831,6 +993,8 @@ class VSSM(nn.Module):
                 layer_sp_scan_blocks = self.sp_scan_blocks
                 if layer_sp_scan_blocks == 'last':
                     self.enabled_sp_scan_block_indices = [depths[i_layer] - 1]
+                elif layer_sp_scan_blocks == 'last2':
+                    self.enabled_sp_scan_block_indices = list(range(max(depths[i_layer] - 2, 0), depths[i_layer]))
                 elif layer_sp_scan_blocks == 'all':
                     self.enabled_sp_scan_block_indices = list(range(depths[i_layer]))
                 else:
@@ -911,13 +1075,14 @@ class VSSM(nn.Module):
     @torch.jit.ignore
     def get_sp_scan_stats(self):
         """Return aggregated SPScan diagnostics from enabled SS2D blocks."""
-        stats_list = []
-        for module in self.modules():
-            stats = getattr(module, 'last_sp_scan_stats', None)
+        stats_by_block = []
+        for block_idx, block in enumerate(self.layers[-1].blocks):
+            stats = getattr(block.self_attention, 'last_sp_scan_stats', None)
             if stats is not None:
-                stats_list.append(dict(stats))
-        if not stats_list:
+                stats_by_block.append((block_idx, dict(stats)))
+        if not stats_by_block:
             return None
+        stats_list = [stats for _, stats in stats_by_block]
 
         aggregated = {}
         numeric_keys = set()
@@ -948,8 +1113,30 @@ class VSSM(nn.Module):
         aggregated['enabled_sp_scan_block_indices'] = tuple(self.enabled_sp_scan_block_indices)
         aggregated['bottleneck_depth'] = self.bottleneck_depth
         aggregated['num_enabled_sp_scan_blocks'] = len(self.enabled_sp_scan_block_indices)
+        aggregated['sp_scan_mode'] = latest_stats.get('sp_scan_mode', 'replacement')
+        if 'extra_path_types' in latest_stats:
+            aggregated['extra_path_types'] = latest_stats['extra_path_types']
+            aggregated['num_extra_paths'] = len(latest_stats['extra_path_types'])
         aggregated['perm_valid'] = all(bool(stats.get('perm_valid', False)) for stats in stats_list)
         aggregated['uses_mamba'] = all(bool(stats.get('uses_mamba', False)) for stats in stats_list)
+
+        gamma_values = []
+        gamma_names = []
+        for block_idx, stats in stats_by_block:
+            for gamma_key in ('gamma_graph', 'gamma_reverse_graph'):
+                gamma_value = stats.get(gamma_key)
+                if gamma_value is not None:
+                    aggregated[f'{gamma_key}_block{block_idx}'] = gamma_value
+                    gamma_values.append(gamma_value.detach().float())
+                    gamma_names.append(
+                        f'layers.{self.num_layers - 1}.blocks.{block_idx}.self_attention.{gamma_key}'
+                    )
+        if gamma_values:
+            gamma_stack = torch.stack(gamma_values)
+            aggregated['gamma_sp_mean'] = gamma_stack.mean()
+            aggregated['gamma_sp_abs_mean'] = gamma_stack.abs().mean()
+            aggregated['extra_gate_parameter_names'] = tuple(gamma_names)
+            aggregated['extra_gate_parameter_count'] = len(gamma_names)
         return aggregated
 
     def forward_features(self, x, return_aux=False):

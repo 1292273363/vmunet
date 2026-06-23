@@ -108,11 +108,14 @@ def _get_sp_scan_stats(model, config):
         'loss_seg': None,
         'loss_total': None,
         'sp_scan_enabled': stats.get('sp_scan_enabled', True),
+        'sp_scan_mode': stats.get('sp_scan_mode', sp_cfg.get('mode', 'replacement')),
         'replace_mode': stats.get('replace_mode', sp_cfg.get('replace_mode', 'NA')),
         'sp_scan_stage': stats.get('sp_scan_stage', getattr(config, 'sp_scan_stage', 'NA')),
         'sp_scan_blocks': stats.get('sp_scan_blocks', getattr(config, 'sp_scan_blocks', 'NA')),
         'enabled_sp_scan_block_indices': stats.get('enabled_sp_scan_block_indices'),
         'bottleneck_depth': stats.get('bottleneck_depth'),
+        'extra_path_types': stats.get('extra_path_types'),
+        'num_extra_paths': stats.get('num_extra_paths'),
         'num_regions_actual': stats.get('num_regions_actual'),
         'feat_h': stats.get('feat_h'),
         'feat_w': stats.get('feat_w'),
@@ -132,7 +135,19 @@ def _get_sp_scan_stats(model, config):
         'perm_valid': stats.get('perm_valid'),
         'uses_mamba': stats.get('uses_mamba'),
         'path_types': stats.get('path_types'),
+        'gamma_sp_mean': stats.get('gamma_sp_mean'),
+        'gamma_sp_abs_mean': stats.get('gamma_sp_abs_mean'),
+        'extra_gate_parameter_names': stats.get('extra_gate_parameter_names'),
+        'extra_gate_parameter_count': stats.get('extra_gate_parameter_count'),
+        'y_original_norm': stats.get('y_original_norm'),
+        'y_graph_norm': stats.get('y_graph_norm'),
+        'y_reverse_graph_norm': stats.get('y_reverse_graph_norm'),
+        'graph_orig_norm_ratio': stats.get('graph_orig_norm_ratio'),
+        'reverse_graph_orig_norm_ratio': stats.get('reverse_graph_orig_norm_ratio'),
     }
+    for key, value in stats.items():
+        if key.startswith('gamma_graph_block') or key.startswith('gamma_reverse_graph_block'):
+            out[key] = value
     return out
 
 
@@ -261,6 +276,17 @@ def train_one_epoch(train_loader,
                 'dist_margin_mean',
                 'logit_margin_mean',
                 'feat_xy_dist_ratio',
+                'gamma_sp_mean',
+                'gamma_sp_abs_mean',
+                'y_original_norm',
+                'y_graph_norm',
+                'y_reverse_graph_norm',
+                'graph_orig_norm_ratio',
+                'reverse_graph_orig_norm_ratio',
+                'gamma_graph_block0',
+                'gamma_graph_block1',
+                'gamma_reverse_graph_block0',
+                'gamma_reverse_graph_block1',
             ):
                 value = _to_float_or_none(loss_stats.get(key))
                 if value is not None:
@@ -324,11 +350,14 @@ def train_one_epoch(train_loader,
                     f"train: epoch {epoch}, iter:{iter}, "
                     f"loss: {_format_log_value(loss_stats.get('loss_total'))}, "
                     f"sp_scan_enabled: {_format_log_value(loss_stats.get('sp_scan_enabled'))}, "
+                    f"sp_scan_mode: {_format_log_value(loss_stats.get('sp_scan_mode'))}, "
                     f"replace_mode: {_format_log_value(loss_stats.get('replace_mode'))}, "
                     f"sp_scan_stage: {_format_log_value(loss_stats.get('sp_scan_stage'))}, "
                     f"sp_scan_blocks: {_format_log_value(loss_stats.get('sp_scan_blocks'))}, "
                     f"enabled_sp_scan_block_indices: {_format_path_modes(loss_stats.get('enabled_sp_scan_block_indices'))}, "
                     f"bottleneck_depth: {_format_log_value(loss_stats.get('bottleneck_depth'))}, "
+                    f"extra_path_types: {_format_path_modes(loss_stats.get('extra_path_types'))}, "
+                    f"num_extra_paths: {_format_log_value(loss_stats.get('num_extra_paths'))}, "
                     f"num_regions_actual: {_format_log_value(loss_stats.get('num_regions_actual'))}, "
                     f"feat_h: {_format_log_value(loss_stats.get('feat_h'))}, "
                     f"feat_w: {_format_log_value(loss_stats.get('feat_w'))}, "
@@ -348,6 +377,19 @@ def train_one_epoch(train_loader,
                     f"perm_valid: {_format_log_value(loss_stats.get('perm_valid'))}, "
                     f"uses_mamba: {_format_log_value(loss_stats.get('uses_mamba'))}, "
                     f"path_types: {_format_path_modes(loss_stats.get('path_types'))}, "
+                    f"gamma_graph_block0: {_format_log_value(loss_stats.get('gamma_graph_block0'), precision=6)}, "
+                    f"gamma_graph_block1: {_format_log_value(loss_stats.get('gamma_graph_block1'), precision=6)}, "
+                    f"gamma_reverse_graph_block0: {_format_log_value(loss_stats.get('gamma_reverse_graph_block0'), precision=6)}, "
+                    f"gamma_reverse_graph_block1: {_format_log_value(loss_stats.get('gamma_reverse_graph_block1'), precision=6)}, "
+                    f"gamma_sp_mean: {_format_log_value(loss_stats.get('gamma_sp_mean'), precision=6)}, "
+                    f"gamma_sp_abs_mean: {_format_log_value(loss_stats.get('gamma_sp_abs_mean'), precision=6)}, "
+                    f"extra_gate_parameter_count: {_format_log_value(loss_stats.get('extra_gate_parameter_count'))}, "
+                    f"extra_gate_parameter_names: {_format_path_modes(loss_stats.get('extra_gate_parameter_names'))}, "
+                    f"y_original_norm: {_format_log_value(loss_stats.get('y_original_norm'))}, "
+                    f"y_graph_norm: {_format_log_value(loss_stats.get('y_graph_norm'))}, "
+                    f"y_reverse_graph_norm: {_format_log_value(loss_stats.get('y_reverse_graph_norm'))}, "
+                    f"graph_orig_norm_ratio: {_format_log_value(loss_stats.get('graph_orig_norm_ratio'))}, "
+                    f"reverse_graph_orig_norm_ratio: {_format_log_value(loss_stats.get('reverse_graph_orig_norm_ratio'))}, "
                     f"lr: {now_lr}"
                 )
             else:
@@ -362,8 +404,11 @@ def train_one_epoch(train_loader,
             f"sp_scan_blocks: {_format_log_value(loss_stats.get('sp_scan_blocks'))}, "
             f"enabled_sp_scan_block_indices: {_format_path_modes(loss_stats.get('enabled_sp_scan_block_indices'))}, "
             f"bottleneck_depth: {_format_log_value(loss_stats.get('bottleneck_depth'))}, "
+            f"sp_scan_mode: {_format_log_value(loss_stats.get('sp_scan_mode'))}, "
             f"replace_mode: {_format_log_value(loss_stats.get('replace_mode'))}, "
             f"path_types: {_format_path_modes(loss_stats.get('path_types'))}, "
+            f"extra_path_types: {_format_path_modes(loss_stats.get('extra_path_types'))}, "
+            f"num_extra_paths: {_format_log_value(loss_stats.get('num_extra_paths'))}, "
             f"uses_mamba: {_format_log_value(loss_stats.get('uses_mamba'))}, "
             f"num_regions_actual: {_format_log_value(loss_stats.get('num_regions_actual'))}, "
             f"feat_h: {_format_log_value(loss_stats.get('feat_h'))}, "
@@ -380,7 +425,20 @@ def train_one_epoch(train_loader,
             f"region_mass_cv: {_format_log_value(summary.get('region_mass_cv'))}, "
             f"dist_margin_mean: {_format_log_value(summary.get('dist_margin_mean'))}, "
             f"logit_margin_mean: {_format_log_value(summary.get('logit_margin_mean'))}, "
-            f"feat_xy_dist_ratio: {_format_log_value(summary.get('feat_xy_dist_ratio'))}"
+            f"feat_xy_dist_ratio: {_format_log_value(summary.get('feat_xy_dist_ratio'))}, "
+            f"gamma_graph_block0: {_format_log_value(summary.get('gamma_graph_block0'), precision=6)}, "
+            f"gamma_graph_block1: {_format_log_value(summary.get('gamma_graph_block1'), precision=6)}, "
+            f"gamma_reverse_graph_block0: {_format_log_value(summary.get('gamma_reverse_graph_block0'), precision=6)}, "
+            f"gamma_reverse_graph_block1: {_format_log_value(summary.get('gamma_reverse_graph_block1'), precision=6)}, "
+            f"gamma_sp_mean: {_format_log_value(summary.get('gamma_sp_mean'), precision=6)}, "
+            f"gamma_sp_abs_mean: {_format_log_value(summary.get('gamma_sp_abs_mean'), precision=6)}, "
+            f"extra_gate_parameter_count: {_format_log_value(loss_stats.get('extra_gate_parameter_count'))}, "
+            f"extra_gate_parameter_names: {_format_path_modes(loss_stats.get('extra_gate_parameter_names'))}, "
+            f"y_original_norm: {_format_log_value(summary.get('y_original_norm'))}, "
+            f"y_graph_norm: {_format_log_value(summary.get('y_graph_norm'))}, "
+            f"y_reverse_graph_norm: {_format_log_value(summary.get('y_reverse_graph_norm'))}, "
+            f"graph_orig_norm_ratio: {_format_log_value(summary.get('graph_orig_norm_ratio'))}, "
+            f"reverse_graph_orig_norm_ratio: {_format_log_value(summary.get('reverse_graph_orig_norm_ratio'))}"
         )
         print(log_info)
         logger.info(log_info)
