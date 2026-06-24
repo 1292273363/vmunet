@@ -582,6 +582,8 @@ class SS2D(nn.Module):
             'sp_scan_mode': 'extra_path',
             'extra_path_types': self.extra_path_types,
             'extra_path_param_indices': tuple(extra_indices),
+            'token_inner_order': self.sp_scan_cfg.get('token_inner_order', 'raster'),
+            'graph_order': self.sp_scan_cfg.get('graph_order', 'greedy'),
             'path_types': ('raster', 'transpose', 'reverse_raster', 'reverse_transpose'),
             'uses_mamba': 'selective_scan_fn' in globals(),
         })
@@ -617,8 +619,11 @@ class SS2D(nn.Module):
 
         self.last_sp_scan_stats = dict(sp_stats)
         self.last_sp_scan_stats.update({
+            'sp_scan_mode': 'replacement',
             'replace_mode': replace_mode,
             'path_types': path_types,
+            'token_inner_order': self.sp_scan_cfg.get('token_inner_order', 'raster'),
+            'graph_order': self.sp_scan_cfg.get('graph_order', 'greedy'),
             'uses_mamba': 'selective_scan_fn' in globals(),
         })
 
@@ -950,6 +955,8 @@ class VSSM(nn.Module):
         self.sp_scan_stage = sp_scan_stage
         self.sp_scan_blocks = sp_scan_blocks
         self.bottleneck_depth = depths[-1]
+        self.stage2_depth = depths[2] if len(depths) > 2 else None
+        self.enabled_sp_scan_stage_index = None
         self.enabled_sp_scan_block_indices = []
         if self.use_sp_rgm and self.use_sp_scan:
             raise ValueError("use_sp_rgm and use_sp_scan cannot both be True.")
@@ -961,14 +968,22 @@ class VSSM(nn.Module):
                 self.sp_scan_blocks = 'all'
             elif self.sp_scan_stage == 'bottleneck':
                 self.sp_scan_blocks = self.sp_scan_blocks or self.sp_scan_cfg.get('sp_scan_blocks', 'last')
+            elif self.sp_scan_stage == 'stage2':
+                if self.num_layers <= 2:
+                    raise ValueError("sp_scan_stage='stage2' requires an encoder with at least three stages.")
+                self.sp_scan_blocks = self.sp_scan_blocks or self.sp_scan_cfg.get('sp_scan_blocks', 'last')
             else:
                 raise ValueError(
-                    "SPScan supports sp_scan_stage in ['bottleneck_last', 'bottleneck', 'bottleneck_all']."
+                    "SPScan supports sp_scan_stage in "
+                    "['bottleneck_last', 'bottleneck', 'bottleneck_all', 'stage2']."
                 )
             if self.sp_scan_blocks not in {'last', 'last2', 'all'} and not isinstance(self.sp_scan_blocks, (list, tuple, set)):
                 raise ValueError(
                     "sp_scan_blocks must be 'last', 'last2', 'all', or a list/tuple/set of block indices."
                 )
+            self.enabled_sp_scan_stage_index = (
+                2 if self.sp_scan_stage == 'stage2' else self.num_layers - 1
+            )
 
         self.patch_embed = PatchEmbed2D(patch_size=patch_size, in_chans=in_chans, embed_dim=self.embed_dim,
             norm_layer=norm_layer if patch_norm else None)
@@ -989,7 +1004,7 @@ class VSSM(nn.Module):
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
             layer_sp_scan_blocks = None
-            if self.use_sp_scan and i_layer == self.num_layers - 1:
+            if self.use_sp_scan and i_layer == self.enabled_sp_scan_stage_index:
                 layer_sp_scan_blocks = self.sp_scan_blocks
                 if layer_sp_scan_blocks == 'last':
                     self.enabled_sp_scan_block_indices = [depths[i_layer] - 1]
@@ -1075,8 +1090,10 @@ class VSSM(nn.Module):
     @torch.jit.ignore
     def get_sp_scan_stats(self):
         """Return aggregated SPScan diagnostics from enabled SS2D blocks."""
+        if self.enabled_sp_scan_stage_index is None:
+            return None
         stats_by_block = []
-        for block_idx, block in enumerate(self.layers[-1].blocks):
+        for block_idx, block in enumerate(self.layers[self.enabled_sp_scan_stage_index].blocks):
             stats = getattr(block.self_attention, 'last_sp_scan_stats', None)
             if stats is not None:
                 stats_by_block.append((block_idx, dict(stats)))
@@ -1110,10 +1127,15 @@ class VSSM(nn.Module):
 
         aggregated['sp_scan_stage'] = self.sp_scan_stage
         aggregated['sp_scan_blocks'] = self.sp_scan_blocks
+        aggregated['enabled_sp_scan_stage_index'] = self.enabled_sp_scan_stage_index
         aggregated['enabled_sp_scan_block_indices'] = tuple(self.enabled_sp_scan_block_indices)
+        aggregated['stage2_depth'] = self.stage2_depth
         aggregated['bottleneck_depth'] = self.bottleneck_depth
         aggregated['num_enabled_sp_scan_blocks'] = len(self.enabled_sp_scan_block_indices)
         aggregated['sp_scan_mode'] = latest_stats.get('sp_scan_mode', 'replacement')
+        if self.sp_scan_stage == 'stage2':
+            aggregated['stage2_feat_h'] = aggregated.get('feat_h')
+            aggregated['stage2_feat_w'] = aggregated.get('feat_w')
         if 'extra_path_types' in latest_stats:
             aggregated['extra_path_types'] = latest_stats['extra_path_types']
             aggregated['num_extra_paths'] = len(latest_stats['extra_path_types'])
@@ -1129,7 +1151,7 @@ class VSSM(nn.Module):
                     aggregated[f'{gamma_key}_block{block_idx}'] = gamma_value
                     gamma_values.append(gamma_value.detach().float())
                     gamma_names.append(
-                        f'layers.{self.num_layers - 1}.blocks.{block_idx}.self_attention.{gamma_key}'
+                        f'layers.{self.enabled_sp_scan_stage_index}.blocks.{block_idx}.self_attention.{gamma_key}'
                     )
         if gamma_values:
             gamma_stack = torch.stack(gamma_values)

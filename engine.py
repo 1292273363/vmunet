@@ -112,7 +112,11 @@ def _get_sp_scan_stats(model, config):
         'replace_mode': stats.get('replace_mode', sp_cfg.get('replace_mode', 'NA')),
         'sp_scan_stage': stats.get('sp_scan_stage', getattr(config, 'sp_scan_stage', 'NA')),
         'sp_scan_blocks': stats.get('sp_scan_blocks', getattr(config, 'sp_scan_blocks', 'NA')),
+        'enabled_sp_scan_stage_index': stats.get('enabled_sp_scan_stage_index'),
         'enabled_sp_scan_block_indices': stats.get('enabled_sp_scan_block_indices'),
+        'stage2_depth': stats.get('stage2_depth'),
+        'stage2_feat_h': stats.get('stage2_feat_h'),
+        'stage2_feat_w': stats.get('stage2_feat_w'),
         'bottleneck_depth': stats.get('bottleneck_depth'),
         'extra_path_types': stats.get('extra_path_types'),
         'num_extra_paths': stats.get('num_extra_paths'),
@@ -135,6 +139,8 @@ def _get_sp_scan_stats(model, config):
         'perm_valid': stats.get('perm_valid'),
         'uses_mamba': stats.get('uses_mamba'),
         'path_types': stats.get('path_types'),
+        'token_inner_order': stats.get('token_inner_order'),
+        'graph_order': stats.get('graph_order'),
         'gamma_sp_mean': stats.get('gamma_sp_mean'),
         'gamma_sp_abs_mean': stats.get('gamma_sp_abs_mean'),
         'extra_gate_parameter_names': stats.get('extra_gate_parameter_names'),
@@ -354,7 +360,11 @@ def train_one_epoch(train_loader,
                     f"replace_mode: {_format_log_value(loss_stats.get('replace_mode'))}, "
                     f"sp_scan_stage: {_format_log_value(loss_stats.get('sp_scan_stage'))}, "
                     f"sp_scan_blocks: {_format_log_value(loss_stats.get('sp_scan_blocks'))}, "
+                    f"enabled_sp_scan_stage_index: {_format_log_value(loss_stats.get('enabled_sp_scan_stage_index'))}, "
                     f"enabled_sp_scan_block_indices: {_format_path_modes(loss_stats.get('enabled_sp_scan_block_indices'))}, "
+                    f"stage2_depth: {_format_log_value(loss_stats.get('stage2_depth'))}, "
+                    f"stage2_feat_h: {_format_log_value(loss_stats.get('stage2_feat_h'))}, "
+                    f"stage2_feat_w: {_format_log_value(loss_stats.get('stage2_feat_w'))}, "
                     f"bottleneck_depth: {_format_log_value(loss_stats.get('bottleneck_depth'))}, "
                     f"extra_path_types: {_format_path_modes(loss_stats.get('extra_path_types'))}, "
                     f"num_extra_paths: {_format_log_value(loss_stats.get('num_extra_paths'))}, "
@@ -377,6 +387,8 @@ def train_one_epoch(train_loader,
                     f"perm_valid: {_format_log_value(loss_stats.get('perm_valid'))}, "
                     f"uses_mamba: {_format_log_value(loss_stats.get('uses_mamba'))}, "
                     f"path_types: {_format_path_modes(loss_stats.get('path_types'))}, "
+                    f"token_inner_order: {_format_log_value(loss_stats.get('token_inner_order'))}, "
+                    f"graph_order: {_format_log_value(loss_stats.get('graph_order'))}, "
                     f"gamma_graph_block0: {_format_log_value(loss_stats.get('gamma_graph_block0'), precision=6)}, "
                     f"gamma_graph_block1: {_format_log_value(loss_stats.get('gamma_graph_block1'), precision=6)}, "
                     f"gamma_reverse_graph_block0: {_format_log_value(loss_stats.get('gamma_reverse_graph_block0'), precision=6)}, "
@@ -402,11 +414,17 @@ def train_one_epoch(train_loader,
             f"train epoch {epoch} sp_scan_mean: "
             f"sp_scan_stage: {_format_log_value(loss_stats.get('sp_scan_stage'))}, "
             f"sp_scan_blocks: {_format_log_value(loss_stats.get('sp_scan_blocks'))}, "
+            f"enabled_sp_scan_stage_index: {_format_log_value(loss_stats.get('enabled_sp_scan_stage_index'))}, "
             f"enabled_sp_scan_block_indices: {_format_path_modes(loss_stats.get('enabled_sp_scan_block_indices'))}, "
+            f"stage2_depth: {_format_log_value(loss_stats.get('stage2_depth'))}, "
+            f"stage2_feat_h: {_format_log_value(loss_stats.get('stage2_feat_h'))}, "
+            f"stage2_feat_w: {_format_log_value(loss_stats.get('stage2_feat_w'))}, "
             f"bottleneck_depth: {_format_log_value(loss_stats.get('bottleneck_depth'))}, "
             f"sp_scan_mode: {_format_log_value(loss_stats.get('sp_scan_mode'))}, "
             f"replace_mode: {_format_log_value(loss_stats.get('replace_mode'))}, "
             f"path_types: {_format_path_modes(loss_stats.get('path_types'))}, "
+            f"token_inner_order: {_format_log_value(loss_stats.get('token_inner_order'))}, "
+            f"graph_order: {_format_log_value(loss_stats.get('graph_order'))}, "
             f"extra_path_types: {_format_path_modes(loss_stats.get('extra_path_types'))}, "
             f"num_extra_paths: {_format_log_value(loss_stats.get('num_extra_paths'))}, "
             f"uses_mamba: {_format_log_value(loss_stats.get('uses_mamba'))}, "
