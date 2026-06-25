@@ -157,6 +157,58 @@ def _get_sp_scan_stats(model, config):
     return out
 
 
+def _get_ssr_stats(model, config):
+    if not getattr(config, 'use_ssr', False):
+        return {}
+    getter = _get_model_attr(model, 'get_ssr_stats')
+    if getter is None:
+        return {}
+    stats = getter() or {}
+    ssr_cfg = getattr(config, 'ssr_cfg', None) or {}
+    out = {
+        'loss_seg': None,
+        'loss_total': None,
+        'use_ssr': stats.get('use_ssr', True),
+        'ssr_stages': stats.get('ssr_stages', ssr_cfg.get('ssr_stages', 'NA')),
+        'ssr_enabled_stage': stats.get('ssr_enabled_stage'),
+        'ssr_enabled_stages': stats.get('ssr_enabled_stages'),
+        'ssr_feature_shape': stats.get('ssr_feature_shape'),
+        'ssr_num_regions': stats.get('ssr_num_regions', stats.get('num_regions')),
+        'num_regions_actual': stats.get('num_regions_actual'),
+        'feat_h': stats.get('feat_h'),
+        'feat_w': stats.get('feat_w'),
+        'use_avg_pool': stats.get('use_avg_pool', ssr_cfg.get('use_avg_pool', 'NA')),
+        'use_max_pool': stats.get('use_max_pool', ssr_cfg.get('use_max_pool', 'NA')),
+        'use_pos_embed': stats.get('use_pos_embed', ssr_cfg.get('use_pos_embed', 'NA')),
+        'use_graph': stats.get('use_graph', ssr_cfg.get('use_graph', 'NA')),
+        'region_update': stats.get('region_update', ssr_cfg.get('region_update', 'NA')),
+        'gate_type': stats.get('gate_type', ssr_cfg.get('gate_type', 'NA')),
+        'gate_value': stats.get('gate_value'),
+        'gamma_raw': stats.get('gamma_raw'),
+        'gate_scale': stats.get('gate_scale', ssr_cfg.get('gate_scale', 'NA')),
+        'Q_entropy': stats.get('Q_entropy'),
+        'q_max_mean': stats.get('q_max_mean'),
+        'q_max_min': stats.get('q_max_min'),
+        'empty_region_ratio': stats.get('empty_region_ratio'),
+        'region_mass_mean': stats.get('region_mass_mean'),
+        'region_mass_min': stats.get('region_mass_min'),
+        'region_mass_max': stats.get('region_mass_max'),
+        'region_mass_std': stats.get('region_mass_std'),
+        'region_mass_nonzero_ratio': stats.get('region_mass_nonzero_ratio'),
+        'region_mass_cv': stats.get('region_mass_cv'),
+        'dist_margin_mean': stats.get('dist_margin_mean'),
+        'logit_margin_mean': stats.get('logit_margin_mean'),
+        'feat_xy_dist_ratio': stats.get('feat_xy_dist_ratio'),
+        'input_norm': stats.get('input_norm'),
+        'recon_norm': stats.get('recon_norm'),
+        'fused_norm': stats.get('fused_norm'),
+        'recon_input_norm_ratio': stats.get('recon_input_norm_ratio'),
+        'output_input_delta_norm': stats.get('output_input_delta_norm'),
+        'output_input_delta_ratio': stats.get('output_input_delta_ratio'),
+    }
+    return out
+
+
 def _compute_train_loss(model_out, targets, criterion, config):
     if not getattr(config, 'use_sp_rgm', False):
         loss = criterion(model_out, targets)
@@ -254,6 +306,7 @@ def train_one_epoch(train_loader,
  
     loss_list = []
     sp_scan_epoch_values = {}
+    ssr_epoch_values = {}
 
     for iter, data in enumerate(train_loader):
         step += 1
@@ -297,6 +350,37 @@ def train_one_epoch(train_loader,
                 value = _to_float_or_none(loss_stats.get(key))
                 if value is not None:
                     sp_scan_epoch_values.setdefault(key, []).append(value)
+        if getattr(config, 'use_ssr', False):
+            ssr_stats = _get_ssr_stats(model, config)
+            ssr_stats['loss_seg'] = loss.detach()
+            ssr_stats['loss_total'] = loss.detach()
+            loss_stats.update(ssr_stats)
+            for key in (
+                'Q_entropy',
+                'q_max_mean',
+                'q_max_min',
+                'empty_region_ratio',
+                'region_mass_mean',
+                'region_mass_min',
+                'region_mass_max',
+                'region_mass_std',
+                'region_mass_nonzero_ratio',
+                'region_mass_cv',
+                'dist_margin_mean',
+                'logit_margin_mean',
+                'feat_xy_dist_ratio',
+                'gate_value',
+                'gamma_raw',
+                'input_norm',
+                'recon_norm',
+                'fused_norm',
+                'recon_input_norm_ratio',
+                'output_input_delta_norm',
+                'output_input_delta_ratio',
+            ):
+                value = _to_float_or_none(loss_stats.get(key))
+                if value is not None:
+                    ssr_epoch_values.setdefault(key, []).append(value)
 
         loss.backward()
         optimizer.step()
@@ -404,6 +488,49 @@ def train_one_epoch(train_loader,
                     f"reverse_graph_orig_norm_ratio: {_format_log_value(loss_stats.get('reverse_graph_orig_norm_ratio'))}, "
                     f"lr: {now_lr}"
                 )
+            elif getattr(config, 'use_ssr', False):
+                log_info = (
+                    f"train: epoch {epoch}, iter:{iter}, "
+                    f"loss: {_format_log_value(loss_stats.get('loss_total'))}, "
+                    f"use_ssr: {_format_log_value(loss_stats.get('use_ssr'))}, "
+                    f"ssr_stages: {_format_path_modes(loss_stats.get('ssr_stages'))}, "
+                    f"ssr_enabled_stage: {_format_log_value(loss_stats.get('ssr_enabled_stage'))}, "
+                    f"ssr_enabled_stages: {_format_path_modes(loss_stats.get('ssr_enabled_stages'))}, "
+                    f"ssr_feature_shape: {_format_path_modes(loss_stats.get('ssr_feature_shape'))}, "
+                    f"ssr_num_regions: {_format_path_modes(loss_stats.get('ssr_num_regions'))}, "
+                    f"num_regions_actual: {_format_log_value(loss_stats.get('num_regions_actual'))}, "
+                    f"feat_h: {_format_log_value(loss_stats.get('feat_h'))}, "
+                    f"feat_w: {_format_log_value(loss_stats.get('feat_w'))}, "
+                    f"use_avg_pool: {_format_log_value(loss_stats.get('use_avg_pool'))}, "
+                    f"use_max_pool: {_format_log_value(loss_stats.get('use_max_pool'))}, "
+                    f"use_pos_embed: {_format_log_value(loss_stats.get('use_pos_embed'))}, "
+                    f"use_graph: {_format_log_value(loss_stats.get('use_graph'))}, "
+                    f"region_update: {_format_log_value(loss_stats.get('region_update'))}, "
+                    f"gate_type: {_format_log_value(loss_stats.get('gate_type'))}, "
+                    f"gate_value: {_format_log_value(loss_stats.get('gate_value'), precision=6)}, "
+                    f"gamma_raw: {_format_log_value(loss_stats.get('gamma_raw'), precision=6)}, "
+                    f"gate_scale: {_format_log_value(loss_stats.get('gate_scale'))}, "
+                    f"Q_entropy: {_format_log_value(loss_stats.get('Q_entropy'))}, "
+                    f"q_max_mean: {_format_log_value(loss_stats.get('q_max_mean'))}, "
+                    f"q_max_min: {_format_log_value(loss_stats.get('q_max_min'))}, "
+                    f"empty_region_ratio: {_format_log_value(loss_stats.get('empty_region_ratio'))}, "
+                    f"region_mass_mean: {_format_log_value(loss_stats.get('region_mass_mean'))}, "
+                    f"region_mass_min: {_format_log_value(loss_stats.get('region_mass_min'))}, "
+                    f"region_mass_max: {_format_log_value(loss_stats.get('region_mass_max'))}, "
+                    f"region_mass_std: {_format_log_value(loss_stats.get('region_mass_std'))}, "
+                    f"region_mass_nonzero_ratio: {_format_log_value(loss_stats.get('region_mass_nonzero_ratio'))}, "
+                    f"region_mass_cv: {_format_log_value(loss_stats.get('region_mass_cv'))}, "
+                    f"dist_margin_mean: {_format_log_value(loss_stats.get('dist_margin_mean'))}, "
+                    f"logit_margin_mean: {_format_log_value(loss_stats.get('logit_margin_mean'))}, "
+                    f"feat_xy_dist_ratio: {_format_log_value(loss_stats.get('feat_xy_dist_ratio'))}, "
+                    f"input_norm: {_format_log_value(loss_stats.get('input_norm'))}, "
+                    f"recon_norm: {_format_log_value(loss_stats.get('recon_norm'))}, "
+                    f"fused_norm: {_format_log_value(loss_stats.get('fused_norm'))}, "
+                    f"recon_input_norm_ratio: {_format_log_value(loss_stats.get('recon_input_norm_ratio'))}, "
+                    f"output_input_delta_norm: {_format_log_value(loss_stats.get('output_input_delta_norm'))}, "
+                    f"output_input_delta_ratio: {_format_log_value(loss_stats.get('output_input_delta_ratio'))}, "
+                    f"lr: {now_lr}"
+                )
             else:
                 log_info = f'train: epoch {epoch}, iter:{iter}, loss: {np.mean(loss_list):.4f}, lr: {now_lr}'
             print(log_info)
@@ -457,6 +584,50 @@ def train_one_epoch(train_loader,
             f"y_reverse_graph_norm: {_format_log_value(summary.get('y_reverse_graph_norm'))}, "
             f"graph_orig_norm_ratio: {_format_log_value(summary.get('graph_orig_norm_ratio'))}, "
             f"reverse_graph_orig_norm_ratio: {_format_log_value(summary.get('reverse_graph_orig_norm_ratio'))}"
+        )
+        print(log_info)
+        logger.info(log_info)
+    if getattr(config, 'use_ssr', False) and ssr_epoch_values:
+        summary = {key: float(np.mean(values)) for key, values in ssr_epoch_values.items()}
+        log_info = (
+            f"train epoch {epoch} ssr_mean: "
+            f"use_ssr: {_format_log_value(loss_stats.get('use_ssr'))}, "
+            f"ssr_stages: {_format_path_modes(loss_stats.get('ssr_stages'))}, "
+            f"ssr_enabled_stage: {_format_log_value(loss_stats.get('ssr_enabled_stage'))}, "
+            f"ssr_enabled_stages: {_format_path_modes(loss_stats.get('ssr_enabled_stages'))}, "
+            f"ssr_feature_shape: {_format_path_modes(loss_stats.get('ssr_feature_shape'))}, "
+            f"ssr_num_regions: {_format_path_modes(loss_stats.get('ssr_num_regions'))}, "
+            f"num_regions_actual: {_format_log_value(loss_stats.get('num_regions_actual'))}, "
+            f"feat_h: {_format_log_value(loss_stats.get('feat_h'))}, "
+            f"feat_w: {_format_log_value(loss_stats.get('feat_w'))}, "
+            f"use_avg_pool: {_format_log_value(loss_stats.get('use_avg_pool'))}, "
+            f"use_max_pool: {_format_log_value(loss_stats.get('use_max_pool'))}, "
+            f"use_pos_embed: {_format_log_value(loss_stats.get('use_pos_embed'))}, "
+            f"use_graph: {_format_log_value(loss_stats.get('use_graph'))}, "
+            f"region_update: {_format_log_value(loss_stats.get('region_update'))}, "
+            f"gate_type: {_format_log_value(loss_stats.get('gate_type'))}, "
+            f"gate_scale: {_format_log_value(loss_stats.get('gate_scale'))}, "
+            f"gate_value: {_format_log_value(summary.get('gate_value'), precision=6)}, "
+            f"gamma_raw: {_format_log_value(summary.get('gamma_raw'), precision=6)}, "
+            f"Q_entropy: {_format_log_value(summary.get('Q_entropy'))}, "
+            f"q_max_mean: {_format_log_value(summary.get('q_max_mean'))}, "
+            f"q_max_min: {_format_log_value(summary.get('q_max_min'))}, "
+            f"empty_region_ratio: {_format_log_value(summary.get('empty_region_ratio'))}, "
+            f"region_mass_mean: {_format_log_value(summary.get('region_mass_mean'))}, "
+            f"region_mass_min: {_format_log_value(summary.get('region_mass_min'))}, "
+            f"region_mass_max: {_format_log_value(summary.get('region_mass_max'))}, "
+            f"region_mass_std: {_format_log_value(summary.get('region_mass_std'))}, "
+            f"region_mass_nonzero_ratio: {_format_log_value(summary.get('region_mass_nonzero_ratio'))}, "
+            f"region_mass_cv: {_format_log_value(summary.get('region_mass_cv'))}, "
+            f"dist_margin_mean: {_format_log_value(summary.get('dist_margin_mean'))}, "
+            f"logit_margin_mean: {_format_log_value(summary.get('logit_margin_mean'))}, "
+            f"feat_xy_dist_ratio: {_format_log_value(summary.get('feat_xy_dist_ratio'))}, "
+            f"input_norm: {_format_log_value(summary.get('input_norm'))}, "
+            f"recon_norm: {_format_log_value(summary.get('recon_norm'))}, "
+            f"fused_norm: {_format_log_value(summary.get('fused_norm'))}, "
+            f"recon_input_norm_ratio: {_format_log_value(summary.get('recon_input_norm_ratio'))}, "
+            f"output_input_delta_norm: {_format_log_value(summary.get('output_input_delta_norm'))}, "
+            f"output_input_delta_ratio: {_format_log_value(summary.get('output_input_delta_ratio'))}"
         )
         print(log_info)
         logger.info(log_info)

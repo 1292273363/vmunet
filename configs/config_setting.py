@@ -11,9 +11,11 @@ class setting_config:
     network = 'vmunet'
     use_sp_rgm = False
     use_sp_scan = False
+    use_ssr = False
     sp_scan_stage = None
     sp_scan_blocks = None
     sp_scan_cfg = None
+    ssr_cfg = None
     sp_rgm_cfg = {
         'num_regions': (8, 8),
         'num_iters': 5,
@@ -45,6 +47,8 @@ class setting_config:
         'sp_scan_cfg': sp_scan_cfg,
         'sp_scan_stage': sp_scan_stage,
         'sp_scan_blocks': sp_scan_blocks,
+        'use_ssr': use_ssr,
+        'ssr_cfg': ssr_cfg,
     }
     lambda_region = 0.2
     lambda_compact = 1e-3

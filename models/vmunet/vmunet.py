@@ -17,14 +17,16 @@ class VMUNet(nn.Module):
                  sp_scan_cfg=None,
                  sp_scan_stage=None,
                  sp_scan_blocks=None,
+                 use_ssr=False,
+                 ssr_cfg=None,
                 ):
         super().__init__()
 
         self.load_ckpt_path = load_ckpt_path
         self.num_classes = num_classes
         self.input_channels = input_channels
-        if use_sp_rgm and use_sp_scan:
-            raise ValueError("VMUNet does not allow use_sp_rgm and use_sp_scan at the same time.")
+        if sum(bool(flag) for flag in (use_sp_rgm, use_sp_scan, use_ssr)) > 1:
+            raise ValueError("VMUNet does not allow use_sp_rgm, use_sp_scan, and use_ssr at the same time.")
 
         self.vmunet = VSSM(in_chans=input_channels,
                            num_classes=num_classes,
@@ -37,6 +39,8 @@ class VMUNet(nn.Module):
                            sp_scan_cfg=sp_scan_cfg,
                            sp_scan_stage=sp_scan_stage,
                            sp_scan_blocks=sp_scan_blocks,
+                           use_ssr=use_ssr,
+                           ssr_cfg=ssr_cfg,
                         )
     
     def forward(self, x, return_aux=False):
@@ -65,6 +69,9 @@ class VMUNet(nn.Module):
 
     def get_sp_scan_stats(self):
         return self.vmunet.get_sp_scan_stats()
+
+    def get_ssr_stats(self):
+        return self.vmunet.get_ssr_stats()
 
     @staticmethod
     def _extract_checkpoint_state(checkpoint):

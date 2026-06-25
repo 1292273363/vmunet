@@ -10,7 +10,7 @@ import torch.utils.checkpoint as checkpoint
 from einops import rearrange, repeat
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from models.region_mamba.soft_slic import SoftSLIC
-from models.region_mamba import SuperpixelRegionGraphMambaBlock
+from models.region_mamba import SuperpixelRegionGraphMambaBlock, SuperpixelSkipRefine
 from models.region_mamba.sp_scan_ordering import (
     batched_gather_tokens,
     build_superpixel_graph_token_permutation,
@@ -940,7 +940,8 @@ class VSSM(nn.Module):
                  dims=[96, 192, 384, 768], dims_decoder=[768, 384, 192, 96], d_state=16, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, patch_norm=True,
                  use_checkpoint=False, use_sp_rgm=False, sp_rgm_cfg=None,
-                 use_sp_scan=False, sp_scan_cfg=None, sp_scan_stage=None, sp_scan_blocks=None, **kwargs):
+                 use_sp_scan=False, sp_scan_cfg=None, sp_scan_stage=None, sp_scan_blocks=None,
+                 use_ssr=False, ssr_cfg=None, **kwargs):
         super().__init__()
         self.num_classes = num_classes
         self.num_layers = len(depths)
@@ -951,15 +952,17 @@ class VSSM(nn.Module):
         self.dims = dims
         self.use_sp_rgm = use_sp_rgm
         self.use_sp_scan = use_sp_scan
+        self.use_ssr = use_ssr
         self.sp_scan_cfg = dict(sp_scan_cfg or {})
         self.sp_scan_stage = sp_scan_stage
         self.sp_scan_blocks = sp_scan_blocks
+        self.ssr_cfg = dict(ssr_cfg or {})
         self.bottleneck_depth = depths[-1]
         self.stage2_depth = depths[2] if len(depths) > 2 else None
         self.enabled_sp_scan_stage_index = None
         self.enabled_sp_scan_block_indices = []
-        if self.use_sp_rgm and self.use_sp_scan:
-            raise ValueError("use_sp_rgm and use_sp_scan cannot both be True.")
+        if sum(bool(flag) for flag in (self.use_sp_rgm, self.use_sp_scan, self.use_ssr)) > 1:
+            raise ValueError("use_sp_rgm, use_sp_scan, and use_ssr are mutually exclusive.")
         if self.use_sp_scan:
             if self.sp_scan_stage == 'bottleneck_last':
                 self.sp_scan_blocks = 'last'
@@ -1055,6 +1058,49 @@ class VSSM(nn.Module):
             )
         else:
             self.sp_rgm = None
+
+        self.ssr_modules = nn.ModuleDict()
+        self.ssr_stages = tuple(self.ssr_cfg.get('ssr_stages', ())) if self.use_ssr else tuple()
+        self.last_ssr_stats = {}
+        if self.use_ssr:
+            if not self.ssr_cfg.get('enabled', True):
+                raise ValueError("use_ssr=True requires ssr_cfg['enabled']=True.")
+            valid_stages = {f'stage{i}' for i in range(self.num_layers)}
+            unknown_stages = set(self.ssr_stages) - valid_stages
+            if unknown_stages:
+                raise ValueError(f"Unknown SSR stages: {sorted(unknown_stages)}. Valid stages: {sorted(valid_stages)}.")
+            if not self.ssr_stages:
+                raise ValueError("use_ssr=True requires ssr_cfg['ssr_stages'] to be non-empty.")
+
+            num_regions_cfg = self.ssr_cfg.get('num_regions', {})
+            shared_num_regions = None if isinstance(num_regions_cfg, dict) else num_regions_cfg
+            for stage_name in self.ssr_stages:
+                stage_index = int(stage_name.replace('stage', ''))
+                stage_num_regions = (
+                    tuple(num_regions_cfg.get(stage_name, (4, 4)))
+                    if isinstance(num_regions_cfg, dict)
+                    else tuple(shared_num_regions or (4, 4))
+                )
+                self.ssr_modules[stage_name] = SuperpixelSkipRefine(
+                    dim=dims[stage_index],
+                    num_regions=stage_num_regions,
+                    num_iters=self.ssr_cfg.get('num_iters', 5),
+                    tau=self.ssr_cfg.get('tau', 0.2),
+                    xy_weight=self.ssr_cfg.get('xy_weight', 2.0),
+                    feat_weight=self.ssr_cfg.get('feat_weight', 0.1),
+                    normalize_assign=self.ssr_cfg.get('normalize_assign', True),
+                    assign_norm=self.ssr_cfg.get('assign_norm', 'layer'),
+                    use_pos_embed=self.ssr_cfg.get('use_pos_embed', True),
+                    use_avg_pool=self.ssr_cfg.get('use_avg_pool', True),
+                    use_max_pool=self.ssr_cfg.get('use_max_pool', True),
+                    use_graph=self.ssr_cfg.get('use_graph', False),
+                    region_update=self.ssr_cfg.get('region_update', 'mlp'),
+                    gamma_init=self.ssr_cfg.get('gamma_init', 1e-3),
+                    gate_type=self.ssr_cfg.get('gate_type', 'bounded_tanh'),
+                    gate_scale=self.ssr_cfg.get('gate_scale', 0.1),
+                    debug_stats=self.ssr_cfg.get('debug_stats', True),
+                    stage_name=stage_name,
+                )
 
         # self.norm = norm_layer(self.num_features)
         # self.avgpool = nn.AdaptiveAvgPool1d(1)
@@ -1161,6 +1207,51 @@ class VSSM(nn.Module):
             aggregated['extra_gate_parameter_count'] = len(gamma_names)
         return aggregated
 
+    @torch.jit.ignore
+    def get_ssr_stats(self):
+        """Return aggregated SSR diagnostics from the refined skip feature(s)."""
+        if not self.use_ssr or not self.last_ssr_stats:
+            return None
+
+        stats_items = list(self.last_ssr_stats.items())
+        stats_list = [stats for _, stats in stats_items]
+        aggregated = {}
+        numeric_keys = set()
+        for stats in stats_list:
+            for key, value in stats.items():
+                if torch.is_tensor(value) and value.numel() == 1:
+                    numeric_keys.add(key)
+                elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                    numeric_keys.add(key)
+
+        for key in numeric_keys:
+            values = []
+            for stats in stats_list:
+                value = stats.get(key)
+                if torch.is_tensor(value) and value.numel() == 1:
+                    values.append(value.detach().float())
+                elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                    values.append(torch.tensor(float(value)))
+            if values:
+                aggregated[key] = torch.stack([v.to(values[0].device) for v in values]).mean()
+
+        latest_stats = stats_list[-1]
+        for key, value in latest_stats.items():
+            aggregated.setdefault(key, value)
+        aggregated['use_ssr'] = True
+        aggregated['ssr_stages'] = tuple(self.ssr_stages)
+        aggregated['ssr_enabled_stages'] = tuple(stage for stage, _ in stats_items)
+        return aggregated
+
+    def apply_ssr_to_skip(self, skip, stage_name):
+        """Apply SSR to a BHWC skip tensor and return the same BHWC shape."""
+        if not self.use_ssr or stage_name not in self.ssr_modules:
+            return skip
+        skip_nchw = skip.permute(0, 3, 1, 2).contiguous()
+        refined_nchw, stats = self.ssr_modules[stage_name](skip_nchw, return_stats=True)
+        self.last_ssr_stats[stage_name] = stats
+        return refined_nchw.permute(0, 2, 3, 1).contiguous()
+
     def forward_features(self, x, return_aux=False):
         skip_list = []
         x = self.patch_embed(x)
@@ -1189,11 +1280,16 @@ class VSSM(nn.Module):
         return x, skip_list, aux
     
     def forward_features_up(self, x, skip_list):
+        self.last_ssr_stats = {}
         for inx, layer_up in enumerate(self.layers_up):
             if inx == 0:
                 x = layer_up(x)
             else:
-                x = layer_up(x+skip_list[-inx])
+                skip = skip_list[-inx]
+                stage_index = self.num_layers - inx
+                stage_name = f'stage{stage_index}'
+                skip = self.apply_ssr_to_skip(skip, stage_name)
+                x = layer_up(x + skip)
 
         return x
     
@@ -1219,6 +1315,10 @@ class VSSM(nn.Module):
         x = self.forward_final(x)
 
         if return_aux:
+            if self.use_ssr:
+                ssr_stats = self.get_ssr_stats()
+                if ssr_stats is not None:
+                    aux['ssr'] = ssr_stats
             return x, aux
         return x
 
