@@ -1,9 +1,26 @@
 import math
+import time
 
 import torch
 from torch import nn
 
 from .soft_slic import SoftSLIC
+
+
+def make_norm2d(num_channels, norm_type='group', num_groups=8):
+    """Build a 2D normalization layer for small-batch segmentation features."""
+    if norm_type == 'group':
+        groups = int(num_groups)
+        if groups <= 0:
+            raise ValueError('num_groups must be positive when norm_type="group".')
+        if num_channels % groups != 0:
+            groups = 1
+        return nn.GroupNorm(num_groups=groups, num_channels=num_channels)
+    if norm_type == 'batch':
+        return nn.BatchNorm2d(num_channels)
+    if norm_type == 'identity':
+        return nn.Identity()
+    raise ValueError("norm_type must be one of ['group', 'batch', 'identity'].")
 
 
 def make_coord_grid(batch_size, height, width, device, dtype):
@@ -86,6 +103,9 @@ class SuperpixelSkipRefine(nn.Module):
         gamma_init=1e-3,
         gate_type='bounded_tanh',
         gate_scale=0.1,
+        norm_type='group',
+        num_groups=8,
+        detach_assignment=False,
         debug_stats=True,
         stage_name='stage',
         eps=1e-6,
@@ -109,19 +129,22 @@ class SuperpixelSkipRefine(nn.Module):
         self.region_update = region_update
         self.gate_type = gate_type
         self.gate_scale = float(gate_scale)
+        self.norm_type = norm_type
+        self.num_groups = int(num_groups)
+        self.detach_assignment = detach_assignment
         self.debug_stats = debug_stats
         self.stage_name = stage_name
         self.eps = eps
 
         self.local_embed = nn.Sequential(
             nn.Conv2d(dim, dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(dim),
+            make_norm2d(dim, norm_type=norm_type, num_groups=num_groups),
             nn.GELU(),
         )
         coord_channels = 2 if use_pos_embed else 0
         self.pixel_proj = nn.Sequential(
             nn.Conv2d(dim + coord_channels, dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(dim),
+            make_norm2d(dim, norm_type=norm_type, num_groups=num_groups),
             nn.GELU(),
         )
         self.soft_slic = SoftSLIC(
@@ -150,7 +173,7 @@ class SuperpixelSkipRefine(nn.Module):
         )
         self.fuse = nn.Sequential(
             nn.Conv2d(dim * 2, dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(dim),
+            make_norm2d(dim, norm_type=norm_type, num_groups=num_groups),
             nn.GELU(),
             nn.Conv2d(dim, dim, kernel_size=1),
         )
@@ -179,6 +202,7 @@ class SuperpixelSkipRefine(nn.Module):
         fused,
         out,
         slic_stats,
+        forward_time_ms,
     ):
         q_max = Q.max(dim=-1).values
         entropy = -(Q.clamp_min(self.eps) * Q.clamp_min(self.eps).log()).sum(dim=-1).mean()
@@ -214,6 +238,9 @@ class SuperpixelSkipRefine(nn.Module):
             'gamma_raw': self.gamma_raw.detach(),
             'gate_scale': self.gate_scale,
             'gate_type': self.gate_type,
+            'norm_type': self.norm_type,
+            'num_groups': self.num_groups,
+            'detach_assignment': self.detach_assignment,
             'use_avg_pool': self.use_avg_pool,
             'use_max_pool': self.use_max_pool,
             'use_pos_embed': self.use_pos_embed,
@@ -225,6 +252,8 @@ class SuperpixelSkipRefine(nn.Module):
             'recon_input_norm_ratio': recon_norm / input_norm.clamp_min(self.eps),
             'output_input_delta_norm': delta_norm,
             'output_input_delta_ratio': delta_norm / input_norm.clamp_min(self.eps),
+            'ssr_forward_time_ms': forward_time_ms,
+            'Q_has_nan': torch.isnan(Q).any().detach(),
             'z_avg_has_nan': torch.isnan(z_avg).any().detach(),
             'z_max_has_nan': torch.isnan(z_max).any().detach(),
         }
@@ -238,7 +267,8 @@ class SuperpixelSkipRefine(nn.Module):
             'xy_dist_mean',
         ):
             if key in slic_stats:
-                stats[key] = slic_stats[key]
+                value = slic_stats[key]
+                stats[key] = value.detach() if torch.is_tensor(value) else value
         return stats
 
     def forward(self, x, return_stats=False):
@@ -251,6 +281,7 @@ class SuperpixelSkipRefine(nn.Module):
             out: Tensor[B, C, H, W]
             stats: dict, only when return_stats=True
         """
+        start_time = time.perf_counter()
         b, c, h, w = x.shape
         pixel_embed = self.local_embed(x)
         if self.use_pos_embed:
@@ -260,7 +291,8 @@ class SuperpixelSkipRefine(nn.Module):
             pixel_input = pixel_embed
         pixel_feat = self.pixel_proj(pixel_input)
 
-        slic_out = self.soft_slic(pixel_feat)
+        slic_input = pixel_feat.detach() if self.detach_assignment else pixel_feat
+        slic_out = self.soft_slic(slic_input)
         if len(slic_out) == 5:
             _, Q, _, _, slic_stats = slic_out
         else:
@@ -289,7 +321,8 @@ class SuperpixelSkipRefine(nn.Module):
         fused = self.fuse(torch.cat([x, recon], dim=1))
         out = x + self._gate_value().to(dtype=x.dtype, device=x.device) * fused
 
-        stats = self._make_stats(x, Q, region_mass, z_avg, z_max, recon, fused, out, slic_stats)
+        forward_time_ms = (time.perf_counter() - start_time) * 1000.0
+        stats = self._make_stats(x, Q, region_mass, z_avg, z_max, recon, fused, out, slic_stats, forward_time_ms)
         self.last_stats = stats
         if return_stats:
             return out, stats

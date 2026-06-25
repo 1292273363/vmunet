@@ -39,6 +39,9 @@ class setting_config(base_setting_config):
         'gamma_init': 1e-3,
         'gate_type': 'bounded_tanh',
         'gate_scale': 0.1,
+        'norm_type': 'group',
+        'num_groups': 8,
+        'detach_assignment': False,
         'debug_stats': True,
     }
 

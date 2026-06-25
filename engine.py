@@ -173,6 +173,10 @@ def _get_ssr_stats(model, config):
         'ssr_enabled_stage': stats.get('ssr_enabled_stage'),
         'ssr_enabled_stages': stats.get('ssr_enabled_stages'),
         'ssr_feature_shape': stats.get('ssr_feature_shape'),
+        'skip_stage_name': stats.get('skip_stage_name'),
+        'skip_shape_before_ssr': stats.get('skip_shape_before_ssr'),
+        'skip_shape_after_ssr': stats.get('skip_shape_after_ssr'),
+        'decoder_layer_index': stats.get('decoder_layer_index'),
         'ssr_num_regions': stats.get('ssr_num_regions', stats.get('num_regions')),
         'num_regions_actual': stats.get('num_regions_actual'),
         'feat_h': stats.get('feat_h'),
@@ -186,6 +190,9 @@ def _get_ssr_stats(model, config):
         'gate_value': stats.get('gate_value'),
         'gamma_raw': stats.get('gamma_raw'),
         'gate_scale': stats.get('gate_scale', ssr_cfg.get('gate_scale', 'NA')),
+        'norm_type': stats.get('norm_type', ssr_cfg.get('norm_type', 'NA')),
+        'num_groups': stats.get('num_groups', ssr_cfg.get('num_groups', 'NA')),
+        'detach_assignment': stats.get('detach_assignment', ssr_cfg.get('detach_assignment', 'NA')),
         'Q_entropy': stats.get('Q_entropy'),
         'q_max_mean': stats.get('q_max_mean'),
         'q_max_min': stats.get('q_max_min'),
@@ -205,6 +212,13 @@ def _get_ssr_stats(model, config):
         'recon_input_norm_ratio': stats.get('recon_input_norm_ratio'),
         'output_input_delta_norm': stats.get('output_input_delta_norm'),
         'output_input_delta_ratio': stats.get('output_input_delta_ratio'),
+        'ssr_forward_time_ms': stats.get('ssr_forward_time_ms'),
+        'Q_has_nan': stats.get('Q_has_nan'),
+        'z_avg_has_nan': stats.get('z_avg_has_nan'),
+        'z_max_has_nan': stats.get('z_max_has_nan'),
+        'total_params': stats.get('total_params'),
+        'ssr_params': stats.get('ssr_params'),
+        'ssr_params_ratio': stats.get('ssr_params_ratio'),
     }
     return out
 
@@ -377,6 +391,7 @@ def train_one_epoch(train_loader,
                 'recon_input_norm_ratio',
                 'output_input_delta_norm',
                 'output_input_delta_ratio',
+                'ssr_forward_time_ms',
             ):
                 value = _to_float_or_none(loss_stats.get(key))
                 if value is not None:
@@ -497,6 +512,10 @@ def train_one_epoch(train_loader,
                     f"ssr_enabled_stage: {_format_log_value(loss_stats.get('ssr_enabled_stage'))}, "
                     f"ssr_enabled_stages: {_format_path_modes(loss_stats.get('ssr_enabled_stages'))}, "
                     f"ssr_feature_shape: {_format_path_modes(loss_stats.get('ssr_feature_shape'))}, "
+                    f"skip_stage_name: {_format_log_value(loss_stats.get('skip_stage_name'))}, "
+                    f"skip_shape_before_ssr: {_format_path_modes(loss_stats.get('skip_shape_before_ssr'))}, "
+                    f"skip_shape_after_ssr: {_format_path_modes(loss_stats.get('skip_shape_after_ssr'))}, "
+                    f"decoder_layer_index: {_format_log_value(loss_stats.get('decoder_layer_index'))}, "
                     f"ssr_num_regions: {_format_path_modes(loss_stats.get('ssr_num_regions'))}, "
                     f"num_regions_actual: {_format_log_value(loss_stats.get('num_regions_actual'))}, "
                     f"feat_h: {_format_log_value(loss_stats.get('feat_h'))}, "
@@ -510,6 +529,9 @@ def train_one_epoch(train_loader,
                     f"gate_value: {_format_log_value(loss_stats.get('gate_value'), precision=6)}, "
                     f"gamma_raw: {_format_log_value(loss_stats.get('gamma_raw'), precision=6)}, "
                     f"gate_scale: {_format_log_value(loss_stats.get('gate_scale'))}, "
+                    f"norm_type: {_format_log_value(loss_stats.get('norm_type'))}, "
+                    f"num_groups: {_format_log_value(loss_stats.get('num_groups'))}, "
+                    f"detach_assignment: {_format_log_value(loss_stats.get('detach_assignment'))}, "
                     f"Q_entropy: {_format_log_value(loss_stats.get('Q_entropy'))}, "
                     f"q_max_mean: {_format_log_value(loss_stats.get('q_max_mean'))}, "
                     f"q_max_min: {_format_log_value(loss_stats.get('q_max_min'))}, "
@@ -529,6 +551,13 @@ def train_one_epoch(train_loader,
                     f"recon_input_norm_ratio: {_format_log_value(loss_stats.get('recon_input_norm_ratio'))}, "
                     f"output_input_delta_norm: {_format_log_value(loss_stats.get('output_input_delta_norm'))}, "
                     f"output_input_delta_ratio: {_format_log_value(loss_stats.get('output_input_delta_ratio'))}, "
+                    f"ssr_forward_time_ms: {_format_log_value(loss_stats.get('ssr_forward_time_ms'))}, "
+                    f"Q_has_nan: {_format_log_value(loss_stats.get('Q_has_nan'))}, "
+                    f"z_avg_has_nan: {_format_log_value(loss_stats.get('z_avg_has_nan'))}, "
+                    f"z_max_has_nan: {_format_log_value(loss_stats.get('z_max_has_nan'))}, "
+                    f"ssr_params: {_format_log_value(loss_stats.get('ssr_params'))}, "
+                    f"total_params: {_format_log_value(loss_stats.get('total_params'))}, "
+                    f"ssr_params_ratio: {_format_log_value(loss_stats.get('ssr_params_ratio'))}, "
                     f"lr: {now_lr}"
                 )
             else:
@@ -596,6 +625,10 @@ def train_one_epoch(train_loader,
             f"ssr_enabled_stage: {_format_log_value(loss_stats.get('ssr_enabled_stage'))}, "
             f"ssr_enabled_stages: {_format_path_modes(loss_stats.get('ssr_enabled_stages'))}, "
             f"ssr_feature_shape: {_format_path_modes(loss_stats.get('ssr_feature_shape'))}, "
+            f"skip_stage_name: {_format_log_value(loss_stats.get('skip_stage_name'))}, "
+            f"skip_shape_before_ssr: {_format_path_modes(loss_stats.get('skip_shape_before_ssr'))}, "
+            f"skip_shape_after_ssr: {_format_path_modes(loss_stats.get('skip_shape_after_ssr'))}, "
+            f"decoder_layer_index: {_format_log_value(loss_stats.get('decoder_layer_index'))}, "
             f"ssr_num_regions: {_format_path_modes(loss_stats.get('ssr_num_regions'))}, "
             f"num_regions_actual: {_format_log_value(loss_stats.get('num_regions_actual'))}, "
             f"feat_h: {_format_log_value(loss_stats.get('feat_h'))}, "
@@ -607,6 +640,9 @@ def train_one_epoch(train_loader,
             f"region_update: {_format_log_value(loss_stats.get('region_update'))}, "
             f"gate_type: {_format_log_value(loss_stats.get('gate_type'))}, "
             f"gate_scale: {_format_log_value(loss_stats.get('gate_scale'))}, "
+            f"norm_type: {_format_log_value(loss_stats.get('norm_type'))}, "
+            f"num_groups: {_format_log_value(loss_stats.get('num_groups'))}, "
+            f"detach_assignment: {_format_log_value(loss_stats.get('detach_assignment'))}, "
             f"gate_value: {_format_log_value(summary.get('gate_value'), precision=6)}, "
             f"gamma_raw: {_format_log_value(summary.get('gamma_raw'), precision=6)}, "
             f"Q_entropy: {_format_log_value(summary.get('Q_entropy'))}, "
@@ -627,7 +663,11 @@ def train_one_epoch(train_loader,
             f"fused_norm: {_format_log_value(summary.get('fused_norm'))}, "
             f"recon_input_norm_ratio: {_format_log_value(summary.get('recon_input_norm_ratio'))}, "
             f"output_input_delta_norm: {_format_log_value(summary.get('output_input_delta_norm'))}, "
-            f"output_input_delta_ratio: {_format_log_value(summary.get('output_input_delta_ratio'))}"
+            f"output_input_delta_ratio: {_format_log_value(summary.get('output_input_delta_ratio'))}, "
+            f"ssr_forward_time_ms: {_format_log_value(summary.get('ssr_forward_time_ms'))}, "
+            f"ssr_params: {_format_log_value(loss_stats.get('ssr_params'))}, "
+            f"total_params: {_format_log_value(loss_stats.get('total_params'))}, "
+            f"ssr_params_ratio: {_format_log_value(loss_stats.get('ssr_params_ratio'))}"
         )
         print(log_info)
         logger.info(log_info)

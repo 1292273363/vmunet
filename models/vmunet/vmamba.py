@@ -1098,6 +1098,9 @@ class VSSM(nn.Module):
                     gamma_init=self.ssr_cfg.get('gamma_init', 1e-3),
                     gate_type=self.ssr_cfg.get('gate_type', 'bounded_tanh'),
                     gate_scale=self.ssr_cfg.get('gate_scale', 0.1),
+                    norm_type=self.ssr_cfg.get('norm_type', 'group'),
+                    num_groups=self.ssr_cfg.get('num_groups', 8),
+                    detach_assignment=self.ssr_cfg.get('detach_assignment', False),
                     debug_stats=self.ssr_cfg.get('debug_stats', True),
                     stage_name=stage_name,
                 )
@@ -1237,20 +1240,48 @@ class VSSM(nn.Module):
 
         latest_stats = stats_list[-1]
         for key, value in latest_stats.items():
+            if torch.is_tensor(value):
+                value = value.detach()
             aggregated.setdefault(key, value)
         aggregated['use_ssr'] = True
         aggregated['ssr_stages'] = tuple(self.ssr_stages)
         aggregated['ssr_enabled_stages'] = tuple(stage for stage, _ in stats_items)
+        aggregated.update(self.get_ssr_param_stats())
         return aggregated
 
-    def apply_ssr_to_skip(self, skip, stage_name):
-        """Apply SSR to a BHWC skip tensor and return the same BHWC shape."""
+    @torch.jit.ignore
+    def get_ssr_param_stats(self):
+        """Return SSR parameter count diagnostics."""
+        total_params = sum(p.numel() for p in self.parameters())
+        ssr_params = sum(p.numel() for p in self.ssr_modules.parameters())
+        return {
+            'total_params': total_params,
+            'ssr_params': ssr_params,
+            'ssr_params_ratio': float(ssr_params) / float(total_params) if total_params > 0 else 0.0,
+        }
+
+    def apply_ssr_to_skip(self, skip, stage_name, decoder_layer_index):
+        """Refine a decoder skip feature saved before the matching encoder layer.
+
+        Args:
+            skip: Tensor[B, H, W, C], exactly as stored in skip_list.
+            stage_name: Encoder-resolution name, e.g. "stage2".
+            decoder_layer_index: Index of the decoder layer consuming this skip.
+        """
         if not self.use_ssr or stage_name not in self.ssr_modules:
             return skip
+        skip_shape_before = tuple(skip.shape)
         skip_nchw = skip.permute(0, 3, 1, 2).contiguous()
         refined_nchw, stats = self.ssr_modules[stage_name](skip_nchw, return_stats=True)
+        refined = refined_nchw.permute(0, 2, 3, 1).contiguous()
+        stats.update({
+            'skip_stage_name': stage_name,
+            'skip_shape_before_ssr': skip_shape_before,
+            'skip_shape_after_ssr': tuple(refined.shape),
+            'decoder_layer_index': decoder_layer_index,
+        })
         self.last_ssr_stats[stage_name] = stats
-        return refined_nchw.permute(0, 2, 3, 1).contiguous()
+        return refined
 
     def forward_features(self, x, return_aux=False):
         skip_list = []
@@ -1260,6 +1291,9 @@ class VSSM(nn.Module):
         x = self.pos_drop(x)
 
         for layer in self.layers:
+            # skip_list stores decoder skip features before the corresponding
+            # encoder layer processes them. SSR refines these saved skip tensors
+            # right before decoder fusion, not encoder layer outputs.
             skip_list.append(x)
             x = layer(x)
 
@@ -1288,7 +1322,7 @@ class VSSM(nn.Module):
                 skip = skip_list[-inx]
                 stage_index = self.num_layers - inx
                 stage_name = f'stage{stage_index}'
-                skip = self.apply_ssr_to_skip(skip, stage_name)
+                skip = self.apply_ssr_to_skip(skip, stage_name, decoder_layer_index=inx)
                 x = layer_up(x + skip)
 
         return x

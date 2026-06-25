@@ -78,6 +78,17 @@ def _get_ssr_stats_for_checkpoint(model, config):
     return getter()
 
 
+def _get_ssr_param_stats_for_model(model):
+    getter = getattr(model, 'get_ssr_param_stats', None)
+    if getter is None and hasattr(model, 'module'):
+        getter = getattr(model.module, 'get_ssr_param_stats', None)
+    if getter is None and hasattr(model, 'vmunet'):
+        getter = getattr(model.vmunet, 'get_ssr_param_stats', None)
+    if getter is None:
+        return None
+    return getter()
+
+
 
 def main(config):
 
@@ -154,6 +165,16 @@ def main(config):
         
     else: raise Exception('network in not right!')
     model = model.cuda()
+    if getattr(config, 'use_ssr', False):
+        ssr_param_stats = _get_ssr_param_stats_for_model(model)
+        if ssr_param_stats is not None:
+            log_info = (
+                f"SSR params: {ssr_param_stats['ssr_params']}, "
+                f"Total params: {ssr_param_stats['total_params']}, "
+                f"SSR param ratio: {ssr_param_stats['ssr_params_ratio'] * 100:.4f}%"
+            )
+            print(log_info)
+            logger.info(log_info)
 
     cal_params_flops(model, 256, logger)
 

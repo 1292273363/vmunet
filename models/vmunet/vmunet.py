@@ -73,6 +73,9 @@ class VMUNet(nn.Module):
     def get_ssr_stats(self):
         return self.vmunet.get_ssr_stats()
 
+    def get_ssr_param_stats(self):
+        return self.vmunet.get_ssr_param_stats()
+
     @staticmethod
     def _extract_checkpoint_state(checkpoint):
         if isinstance(checkpoint, dict):
